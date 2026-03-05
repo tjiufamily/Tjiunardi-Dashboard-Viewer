@@ -73,6 +73,30 @@ export function useAllRuns() {
   return { runs, loading };
 }
 
+export function useGemRuns(gemId: string) {
+  const [runs, setRuns] = useState<GemRun[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!gemId) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    supabase
+      .from('gem_runs')
+      .select('*')
+      .eq('gem_id', gemId)
+      .order('created_at', { ascending: false })
+      .then(({ data, error }) => {
+        if (!error && data) setRuns(data as GemRun[]);
+        setLoading(false);
+      });
+  }, [gemId]);
+
+  return { runs, loading };
+}
+
 export function useCompanyRuns(companyId: string) {
   const [runs, setRuns] = useState<GemRun[]>([]);
   const [loading, setLoading] = useState(true);

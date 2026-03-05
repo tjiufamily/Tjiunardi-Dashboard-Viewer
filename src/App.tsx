@@ -4,6 +4,7 @@ import { useAuth } from './context/AuthContext';
 import LoginPage from './pages/LoginPage';
 import CompaniesPage from './pages/CompaniesPage';
 import CompanyDetailPage from './pages/CompanyDetailPage';
+import GemDetailPage from './pages/GemDetailPage';
 import Layout from './components/Layout';
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
@@ -36,6 +37,11 @@ export default function App() {
       <Route path="/company/:companyId" element={
         <ProtectedRoute>
           <Layout><CompanyDetailPage /></Layout>
+        </ProtectedRoute>
+      } />
+      <Route path="/gem/:gemId" element={
+        <ProtectedRoute>
+          <Layout><GemDetailPage /></Layout>
         </ProtectedRoute>
       } />
       <Route path="*" element={<Navigate to="/" replace />} />
