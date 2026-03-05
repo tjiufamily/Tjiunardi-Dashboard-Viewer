@@ -117,6 +117,7 @@ a:hover { color: var(--accent-hover); }
   cursor: pointer; transition: all var(--transition);
   white-space: nowrap; line-height: 1.2;
 }
+a.btn { text-decoration: none; color: inherit; }
 .btn:disabled { opacity: 0.55; cursor: not-allowed; }
 
 .btn-primary {

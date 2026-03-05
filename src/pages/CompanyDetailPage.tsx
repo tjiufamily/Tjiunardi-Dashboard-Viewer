@@ -253,13 +253,12 @@ export default function CompanyDetailPage() {
                       </div>
                       <div className="run-card-right">
                         {hasUrl ? (
-                          <button
-                            type="button"
+                          <a
+                            href={run.conversation_url!}
+                            target="_blank"
+                            rel="noopener noreferrer"
                             className="btn btn-primary btn-sm"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              window.location.href = run.conversation_url!;
-                            }}
+                            onClick={(e) => e.stopPropagation()}
                           >
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                               <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
@@ -267,7 +266,7 @@ export default function CompanyDetailPage() {
                               <line x1="10" y1="14" x2="21" y2="3" />
                             </svg>
                             Open in Gemini
-                          </button>
+                          </a>
                         ) : (
                           <span className="run-no-url">No link saved</span>
                         )}
