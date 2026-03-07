@@ -168,18 +168,24 @@ export default function CompaniesPage() {
 
   return (
     <div className="companies-page">
-      {/* View mode dropdown */}
+      {/* View mode toggle */}
       <div className="view-mode-bar">
-        <label htmlFor="view-mode-select" className="view-mode-label">View</label>
-        <select
-          id="view-mode-select"
-          value={viewMode}
-          onChange={(e) => setViewMode(e.target.value as ViewMode)}
-          className="view-mode-select"
-        >
-          <option value="companies">By Companies</option>
-          <option value="gems">By Gems</option>
-        </select>
+        <div className="view-mode-toggle" role="group" aria-label="View by">
+          <button
+            type="button"
+            className={`view-mode-btn ${viewMode === 'companies' ? 'active' : ''}`}
+            onClick={() => setViewMode('companies')}
+          >
+            By Companies
+          </button>
+          <button
+            type="button"
+            className={`view-mode-btn ${viewMode === 'gems' ? 'active' : ''}`}
+            onClick={() => setViewMode('gems')}
+          >
+            By Gems
+          </button>
+        </div>
       </div>
 
       {/* Stats banner */}
@@ -216,6 +222,36 @@ export default function CompaniesPage() {
           </>
         )}
       </div>
+
+      {/* Category pills (By Gems only) - at top */}
+      {viewMode === 'gems' && (
+        <div className="category-pills">
+          <button
+            type="button"
+            className={`category-pill ${!gemCategoryFilter ? 'active' : ''}`}
+            onClick={() => setGemCategoryFilter('')}
+          >
+            All
+          </button>
+          {categories.map(cat => (
+            <button
+              key={cat.id}
+              type="button"
+              className={`category-pill ${gemCategoryFilter === cat.id ? 'active' : ''}`}
+              onClick={() => setGemCategoryFilter(cat.id)}
+            >
+              {cat.name}
+            </button>
+          ))}
+          <button
+            type="button"
+            className={`category-pill ${gemCategoryFilter === UNCATEGORIZED_ID ? 'active' : ''}`}
+            onClick={() => setGemCategoryFilter(UNCATEGORIZED_ID)}
+          >
+            Uncategorized
+          </button>
+        </div>
+      )}
 
       {/* Toolbar */}
       <div className="toolbar">
@@ -261,18 +297,6 @@ export default function CompaniesPage() {
             </>
           ) : (
             <>
-              <select
-                value={gemCategoryFilter}
-                onChange={(e) => setGemCategoryFilter(e.target.value)}
-                className="sort-select"
-                aria-label="Filter by category"
-              >
-                <option value="">All categories</option>
-                {categories.map(cat => (
-                  <option key={cat.id} value={cat.id}>{cat.name}</option>
-                ))}
-                <option value={UNCATEGORIZED_ID}>Uncategorized</option>
-              </select>
               <select
                 value={gemSort}
                 onChange={(e) => setGemSort(e.target.value as GemSortOption)}
@@ -412,6 +436,9 @@ export default function CompaniesPage() {
                           <span className="gem-type">{gem.type}</span>
                         </div>
                         <h3 className="gem-name">{gem.name}</h3>
+                        {gem.description && (
+                          <p className="gem-card-description">{gem.description}</p>
+                        )}
                         <div className="gem-card-footer">
                           <span className="gem-meta">
                             <span className="gem-meta-label">Created</span> {created}

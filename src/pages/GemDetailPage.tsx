@@ -103,6 +103,9 @@ export default function GemDetailPage() {
         <div className="detail-title-row">
           <h2>{gem.name}</h2>
           <span className="company-ticker large">{gem.type}</span>
+          {gem.description && (
+            <p className="gem-description detail-gem-desc">{gem.description}</p>
+          )}
           <span className="detail-run-count">
             {runs.length} {runs.length === 1 ? 'report' : 'reports'} across {runsByCompany.size} {runsByCompany.size === 1 ? 'company' : 'companies'}
           </span>
@@ -204,7 +207,7 @@ export default function GemDetailPage() {
               <div className="runs-header">
                 <div className="runs-header-left">
                   <h3>{selectedCompany?.name}</h3>
-                  <p className="gem-description">{selectedCompany?.ticker}</p>
+                  <span className="runs-header-ticker">{selectedCompany?.ticker}</span>
                 </div>
                 <span className="runs-count">
                   {selectedRuns.length} {selectedRuns.length === 1 ? 'conversation' : 'conversations'}

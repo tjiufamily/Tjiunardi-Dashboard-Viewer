@@ -178,6 +178,9 @@ export default function CompanyDetailPage() {
                   >
                     <div className="gem-item-main">
                       <span className="gem-name">{gem.name}</span>
+                      {gem.description && (
+                        <span className="gem-item-description">{gem.description}</span>
+                      )}
                       {categoryName && <span className="gem-category">{categoryName}</span>}
                     </div>
                     {count > 0 && <span className="gem-run-count">{count}</span>}

@@ -20,7 +20,7 @@ export default function Layout({ children }: PropsWithChildren) {
             </svg>
           </div>
           <div className="layout-title-group">
-            <h1 className="layout-title">Dashboard Viewer</h1>
+            <h1 className="layout-title">Dashboard Viewer <span className="layout-title-by">by Tjiunardi Family for the glory of God</span></h1>
             {!isHome && <span className="layout-subtitle">Tjiunardi Research</span>}
           </div>
         </div>
