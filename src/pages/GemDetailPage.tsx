@@ -14,7 +14,10 @@ export default function GemDetailPage() {
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(null);
   const [companySort, setCompanySort] = useState<CompanySort>('name-asc');
   const [companySearch, setCompanySearch] = useState('');
-  const [showCompanyPanel, setShowCompanyPanel] = useState(false);
+  // On mobile (≤768px), show Companies sidebar by default so users don't need to tap the hamburger
+  const [showCompanyPanel, setShowCompanyPanel] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches
+  );
 
   const loading = companiesLoading || gemsLoading || runsLoading;
   const gem = gems.find(g => g.id === gemId);

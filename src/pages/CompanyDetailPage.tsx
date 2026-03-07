@@ -16,7 +16,10 @@ export default function CompanyDetailPage() {
   const [gemSort, setGemSort] = useState<GemSort>('rank');
   const [onlyWithRuns, setOnlyWithRuns] = useState(true);
   const [gemSearch, setGemSearch] = useState('');
-  const [showGemPanel, setShowGemPanel] = useState(false);
+  // On mobile (≤768px), show Gems sidebar by default so users don't need to tap the hamburger
+  const [showGemPanel, setShowGemPanel] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches
+  );
 
   const loading = companiesLoading || gemsLoading || runsLoading;
   const company = companies.find(c => c.id === companyId);
