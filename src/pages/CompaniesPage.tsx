@@ -30,7 +30,7 @@ export default function CompaniesPage() {
   const [onlyWithReports, setOnlyWithReports] = useState(false);
 
   const UNCATEGORIZED_ID = '__uncategorized__';
-  /** Pseudo–category: gems that have at least one run with captured metrics. */
+  /** Pseudo–category: gems with captured metrics and/or weighted scores on at least one run. */
   const GEM_FILTER_METRIC_SCORES_ID = '__with_metric_scores__';
 
   const loading = companiesLoading || runsLoading || gemsLoading || categoriesLoading || scoresLoading;
@@ -88,11 +88,12 @@ export default function CompaniesPage() {
     return map;
   }, [runs]);
 
-  const gemIdsWithCapturedMetrics = useMemo(() => {
+  const gemIdsWithMetricsOrWeightedScores = useMemo(() => {
     const s = new Set<string>();
     for (const r of runs) {
       const cm = r.captured_metrics;
       if (cm && Object.keys(cm).length > 0) s.add(r.gem_id);
+      if (r.weighted_score != null) s.add(r.gem_id);
     }
     return s;
   }, [runs]);
@@ -129,7 +130,7 @@ export default function CompaniesPage() {
     }
     if (gemCategoryFilter) {
       if (gemCategoryFilter === GEM_FILTER_METRIC_SCORES_ID) {
-        result = result.filter(g => gemIdsWithCapturedMetrics.has(g.id));
+        result = result.filter(g => gemIdsWithMetricsOrWeightedScores.has(g.id));
       } else if (gemCategoryFilter === UNCATEGORIZED_ID) {
         result = result.filter(g => !g.category_id);
       } else {
@@ -161,7 +162,7 @@ export default function CompaniesPage() {
       case 'modified-desc': result.sort((a, b) => (date(b, 'updated_at') || '').localeCompare(date(a, 'updated_at') || '')); break;
     }
     return result;
-  }, [gems, search, gemSort, gemCategoryFilter, categoryMap, gemIdsWithCapturedMetrics]);
+  }, [gems, search, gemSort, gemCategoryFilter, categoryMap, gemIdsWithMetricsOrWeightedScores]);
 
   type CategoryGroup = { categoryId: string; categoryName: string; gems: Gem[] };
   const gemsByCategory = useMemo((): CategoryGroup[] => {
@@ -261,7 +262,7 @@ export default function CompaniesPage() {
             type="button"
             className={`category-pill ${gemCategoryFilter === GEM_FILTER_METRIC_SCORES_ID ? 'active' : ''}`}
             onClick={() => setGemCategoryFilter(GEM_FILTER_METRIC_SCORES_ID)}
-            title="Gems with at least one run that has captured metric scores"
+            title="Gems with at least one run that has captured metrics or a weighted score"
           >
             Metric scores
           </button>
