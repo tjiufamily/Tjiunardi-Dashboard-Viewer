@@ -6,7 +6,13 @@ export default function Layout({ children }: PropsWithChildren) {
   const { signOut, session } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const isHome = location.pathname === '/';
+
+  const navItems = [
+    { path: '/', label: 'Dashboard' },
+    { path: '/scores', label: 'Scores' },
+    { path: '/metrics', label: 'Metrics' },
+    { path: '/position-sizing', label: 'Position Sizing' },
+  ];
 
   return (
     <div className="layout">
@@ -21,9 +27,19 @@ export default function Layout({ children }: PropsWithChildren) {
           </div>
           <div className="layout-title-group">
             <h1 className="layout-title">Dashboard Viewer <span className="layout-title-by">by Tjiunardi Family for the glory of God</span></h1>
-            {!isHome && <span className="layout-subtitle">Tjiunardi Research</span>}
           </div>
         </div>
+        <nav className="layout-nav">
+          {navItems.map(item => (
+            <button
+              key={item.path}
+              className={`nav-link ${location.pathname === item.path ? 'active' : ''}`}
+              onClick={() => navigate(item.path)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </nav>
         <div className="layout-header-right">
           <span className="layout-email">{session?.user?.email}</span>
           <button className="btn btn-ghost" onClick={signOut}>
