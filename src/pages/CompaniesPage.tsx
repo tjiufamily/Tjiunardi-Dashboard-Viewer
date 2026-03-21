@@ -1,6 +1,8 @@
 import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useCompanies, useGems, useCategories, useAllRuns } from '../hooks/useData';
+import { useScoresData } from '../hooks/useScores';
+import { avgOfScores } from '../lib/columnMinFilters';
 import type { Gem } from '../types';
 
 type ViewMode = 'companies' | 'gems';
@@ -17,6 +19,7 @@ export default function CompaniesPage() {
   const { gems, loading: gemsLoading } = useGems();
   const { categories, loading: categoriesLoading } = useCategories();
   const { runs, loading: runsLoading } = useAllRuns();
+  const { companyScores, loading: scoresLoading } = useScoresData();
   const navigate = useNavigate();
 
   const [viewMode, setViewMode] = useState<ViewMode>('companies');
@@ -27,8 +30,18 @@ export default function CompaniesPage() {
   const [onlyWithReports, setOnlyWithReports] = useState(false);
 
   const UNCATEGORIZED_ID = '__uncategorized__';
+  /** Pseudo–category: gems that have at least one run with captured metrics. */
+  const GEM_FILTER_METRIC_SCORES_ID = '__with_metric_scores__';
 
-  const loading = companiesLoading || runsLoading || gemsLoading || categoriesLoading;
+  const loading = companiesLoading || runsLoading || gemsLoading || categoriesLoading || scoresLoading;
+
+  const avgWeightedByCompanyId = useMemo(() => {
+    const m = new Map<string, number | null>();
+    for (const c of companyScores) {
+      m.set(c.companyId, avgOfScores(c.scores));
+    }
+    return m;
+  }, [companyScores]);
 
   const runCountByCompany = useMemo(() => {
     const map = new Map<string, number>();
@@ -75,6 +88,15 @@ export default function CompaniesPage() {
     return map;
   }, [runs]);
 
+  const gemIdsWithCapturedMetrics = useMemo(() => {
+    const s = new Set<string>();
+    for (const r of runs) {
+      const cm = r.captured_metrics;
+      if (cm && Object.keys(cm).length > 0) s.add(r.gem_id);
+    }
+    return s;
+  }, [runs]);
+
   const filtered = useMemo(() => {
     let result = [...companies];
 
@@ -106,7 +128,9 @@ export default function CompaniesPage() {
       result = result.filter(g => g.name.toLowerCase().includes(q));
     }
     if (gemCategoryFilter) {
-      if (gemCategoryFilter === UNCATEGORIZED_ID) {
+      if (gemCategoryFilter === GEM_FILTER_METRIC_SCORES_ID) {
+        result = result.filter(g => gemIdsWithCapturedMetrics.has(g.id));
+      } else if (gemCategoryFilter === UNCATEGORIZED_ID) {
         result = result.filter(g => !g.category_id);
       } else {
         result = result.filter(g => g.category_id === gemCategoryFilter);
@@ -137,7 +161,7 @@ export default function CompaniesPage() {
       case 'modified-desc': result.sort((a, b) => (date(b, 'updated_at') || '').localeCompare(date(a, 'updated_at') || '')); break;
     }
     return result;
-  }, [gems, search, gemSort, gemCategoryFilter, categoryMap]);
+  }, [gems, search, gemSort, gemCategoryFilter, categoryMap, gemIdsWithCapturedMetrics]);
 
   type CategoryGroup = { categoryId: string; categoryName: string; gems: Gem[] };
   const gemsByCategory = useMemo((): CategoryGroup[] => {
@@ -232,6 +256,14 @@ export default function CompaniesPage() {
             onClick={() => setGemCategoryFilter('')}
           >
             All
+          </button>
+          <button
+            type="button"
+            className={`category-pill ${gemCategoryFilter === GEM_FILTER_METRIC_SCORES_ID ? 'active' : ''}`}
+            onClick={() => setGemCategoryFilter(GEM_FILTER_METRIC_SCORES_ID)}
+            title="Gems with at least one run that has captured metric scores"
+          >
+            Metric scores
           </button>
           {categories.map(cat => (
             <button
@@ -360,11 +392,13 @@ export default function CompaniesPage() {
               const reportCount = runCountByCompany.get(company.id) ?? 0;
               const gemCount = gemCountByCompany.get(company.id) ?? 0;
               const lastRun = latestRunByCompany.get(company.id);
+              const avgWeighted = avgWeightedByCompanyId.get(company.id) ?? null;
+              const eliteAvg = avgWeighted != null && avgWeighted > 9;
 
               return (
                 <div
                   key={company.id}
-                  className={`company-card ${reportCount > 0 ? 'has-reports' : ''}`}
+                  className={`company-card ${reportCount > 0 ? 'has-reports' : ''} ${eliteAvg ? 'company-card--elite-avg' : ''}`}
                   onClick={() => navigate(`/company/${company.id}`)}
                   role="button"
                   tabIndex={0}
@@ -372,13 +406,35 @@ export default function CompaniesPage() {
                 >
                   <div className="company-card-header">
                     <span className="company-ticker">{company.ticker}</span>
-                    {reportCount > 0 && (
-                      <span className="report-badge">
-                        {reportCount} {reportCount === 1 ? 'report' : 'reports'}
-                      </span>
-                    )}
+                    <div className="company-card-header-badges">
+                      {reportCount > 0 && (
+                        <span className="report-badge">
+                          {reportCount} {reportCount === 1 ? 'report' : 'reports'}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <h3 className="company-name">{company.name}</h3>
+                  {avgWeighted != null && (
+                    <div className="company-card-avg-row">
+                      <span
+                        className="company-avg-score"
+                        title="Average of all weighted gem scores (0–10), same as Scores / Metrics"
+                      >
+                        Avg score: {avgWeighted.toFixed(1)}
+                      </span>
+                      {eliteAvg && (
+                        <span
+                          className="company-crown-pair"
+                          title="Average weighted score above 9 (elite)"
+                          aria-label="Elite: two crown markers for average score above 9"
+                        >
+                          <span className="tile-crown-emoji" aria-hidden>👑</span>
+                          <span className="tile-crown-emoji" aria-hidden>👑</span>
+                        </span>
+                      )}
+                    </div>
+                  )}
                   <div className="company-card-footer">
                     {reportCount > 0 ? (
                       <>

@@ -13,6 +13,11 @@ export const DEFAULT_SCORE_BRACKETS: ScoreThreshold[] = [
 export const DEFAULT_FLOOR_SCORE = 7;
 export const DEFAULT_BASE_MAX = 5;
 
+/** When mean of all present weighted scores exceeds this, base position uses `AVG_SCORE_SUPERIOR_MAX_PCT` (overrides per-metric bracket minimum). */
+export const AVG_WEIGHTED_SCORE_SUPERIOR_THRESHOLD = 9;
+/** Fixed base position % when average weighted score is above `AVG_WEIGHTED_SCORE_SUPERIOR_THRESHOLD`. */
+export const AVG_WEIGHTED_SCORE_SUPERIOR_MAX_PCT = 5;
+
 export type CagrBracket = { minCagr: number; multiplier: number };
 
 export const DEFAULT_CAGR_BRACKETS: CagrBracket[] = [
@@ -57,6 +62,11 @@ export type MetricResult = {
 
 export type SizingResult = {
   metricResults: MetricResult[];
+  /** Minimum of per-metric bracket caps (before average-score superior rule). */
+  bracketBasePosition: number;
+  averageWeightedScore: number | null;
+  /** True when average weighted score &gt; threshold: base uses `AVG_WEIGHTED_SCORE_SUPERIOR_MAX_PCT` instead of bracket min. */
+  avgScoreRuleApplied: boolean;
   basePosition: number;
   baseLimitedBy: ScoreType | null;
   cagrMultiplier: number | null;
@@ -67,6 +77,12 @@ export type SizingResult = {
   finalPosition: number;
   warnings: string[];
 };
+
+function meanWeightedScore(scores: Partial<Record<ScoreType, number>>): number | null {
+  const vals = SCORE_TYPES.map(st => scores[st]).filter((v): v is number => v != null);
+  if (vals.length === 0) return null;
+  return vals.reduce((a, b) => a + b, 0) / vals.length;
+}
 
 function resolveScoreBracket(
   score: number,
@@ -97,19 +113,32 @@ export function calculatePositionSize(inputs: SizingInputs): SizingResult {
   }
 
   const scoredMetrics = metricResults.filter(m => m.score != null);
-  let basePosition = inputs.baseMax;
+  let bracketBasePosition = inputs.baseMax;
   let baseLimitedBy: ScoreType | null = null;
 
   if (scoredMetrics.length === 0) {
-    basePosition = 0;
+    bracketBasePosition = 0;
     warnings.push('No scored metrics available.');
   } else {
     for (const m of scoredMetrics) {
-      if (m.maxPct < basePosition) {
-        basePosition = m.maxPct;
+      if (m.maxPct < bracketBasePosition) {
+        bracketBasePosition = m.maxPct;
         baseLimitedBy = m.scoreType;
       }
     }
+  }
+
+  const averageWeightedScore = meanWeightedScore(inputs.scores);
+  let basePosition = bracketBasePosition;
+  let avgScoreRuleApplied = false;
+  if (
+    averageWeightedScore != null &&
+    averageWeightedScore > AVG_WEIGHTED_SCORE_SUPERIOR_THRESHOLD &&
+    scoredMetrics.length > 0
+  ) {
+    avgScoreRuleApplied = true;
+    basePosition = AVG_WEIGHTED_SCORE_SUPERIOR_MAX_PCT;
+    baseLimitedBy = null;
   }
 
   let cagrMultiplier: number | null = null;
@@ -175,6 +204,10 @@ export function calculatePositionSize(inputs: SizingInputs): SizingResult {
 
   return {
     metricResults,
+    bracketBasePosition: Math.round(bracketBasePosition * 100) / 100,
+    averageWeightedScore:
+      averageWeightedScore == null ? null : Math.round(averageWeightedScore * 100) / 100,
+    avgScoreRuleApplied,
     basePosition,
     baseLimitedBy,
     cagrMultiplier,

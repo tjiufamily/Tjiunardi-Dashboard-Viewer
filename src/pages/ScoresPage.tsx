@@ -3,15 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import { useScoresData } from '../hooks/useScores';
 import { SCORE_TYPES, SCORE_LABELS, SCORE_COLUMN_HELP } from '../types';
 import type { ScoreType, CompanyScores } from '../types';
+import { avgOfScores, rowPassesColumnMins } from '../lib/columnMinFilters';
 
 type SortKey = 'name' | 'ticker' | ScoreType | 'avg';
 type SortDir = 'asc' | 'desc';
-
-function avg(scores: Partial<Record<ScoreType, number>>): number | null {
-  const vals = SCORE_TYPES.map(st => scores[st]).filter((v): v is number => v != null);
-  if (vals.length === 0) return null;
-  return vals.reduce((a, b) => a + b, 0) / vals.length;
-}
 
 function fmt(v: number | null | undefined): string {
   if (v == null) return '—';
@@ -24,10 +19,17 @@ export default function ScoresPage() {
 
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
-  const [threshold, setThreshold] = useState<string>('');
   const [search, setSearch] = useState('');
+  const [columnMins, setColumnMins] = useState<Record<string, string>>({});
 
-  const thresholdNum = threshold === '' ? null : parseFloat(threshold);
+  const setMin = (key: string, value: string) => {
+    setColumnMins(prev => ({ ...prev, [key]: value }));
+  };
+
+  const resetFilters = () => {
+    setSearch('');
+    setColumnMins({});
+  };
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -46,25 +48,28 @@ export default function ScoresPage() {
       list = list.filter(c => c.companyName.toLowerCase().includes(q) || c.ticker.toLowerCase().includes(q));
     }
 
-    if (thresholdNum != null && !isNaN(thresholdNum)) {
-      list = list.filter(c => {
-        const a = avg(c.scores);
-        return a != null && a >= thresholdNum;
-      });
-    }
+    list = list.filter(c =>
+      rowPassesColumnMins(
+        columnMins,
+        st => c.scores[st],
+        () => undefined,
+        [],
+        () => avgOfScores(c.scores),
+      ),
+    );
 
     const dir = sortDir === 'asc' ? 1 : -1;
     list.sort((a, b) => {
       if (sortKey === 'name') return a.companyName.localeCompare(b.companyName) * dir;
       if (sortKey === 'ticker') return a.ticker.localeCompare(b.ticker) * dir;
-      if (sortKey === 'avg') return ((avg(a.scores) ?? -1) - (avg(b.scores) ?? -1)) * dir;
+      if (sortKey === 'avg') return ((avgOfScores(a.scores) ?? -1) - (avgOfScores(b.scores) ?? -1)) * dir;
       const va = a.scores[sortKey as ScoreType] ?? -1;
       const vb = b.scores[sortKey as ScoreType] ?? -1;
       return (va - vb) * dir;
     });
 
     return list;
-  }, [companyScores, search, thresholdNum, sortKey, sortDir]);
+  }, [companyScores, search, columnMins, sortKey, sortDir]);
 
   const arrow = (key: SortKey) => (sortKey === key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
 
@@ -75,6 +80,8 @@ export default function ScoresPage() {
     if (score >= 7) return 'score-cell fair';
     return 'score-cell low';
   };
+
+  const colSpan = SCORE_TYPES.length + 4;
 
   if (loading) {
     return (
@@ -102,26 +109,17 @@ export default function ScoresPage() {
             className="scores-search"
           />
         </div>
-        <div className="threshold-box">
-          <label>Min avg score:</label>
-          <input
-            type="number"
-            step="0.5"
-            min="0"
-            max="10"
-            placeholder="e.g. 8"
-            value={threshold}
-            onChange={e => setThreshold(e.target.value)}
-            className="threshold-input"
-          />
-        </div>
+        <button type="button" className="btn btn-ghost btn-sm scores-reset-filters" onClick={resetFilters}>
+          Reset filters
+        </button>
       </div>
 
       <div className="scores-table-wrap">
-        <table className="scores-table">
+        <table className="scores-table scores-table--min-filters">
           <thead>
             <tr>
-              <th className="sticky-col" onClick={() => toggleSort('name')}>
+              <th className="sticky-action">Action</th>
+              <th className="sticky-after-action" onClick={() => toggleSort('name')}>
                 Company{arrow('name')}
               </th>
               <th onClick={() => toggleSort('ticker')}>Ticker{arrow('ticker')}</th>
@@ -137,16 +135,67 @@ export default function ScoresPage() {
                 </th>
               ))}
               <th onClick={() => toggleSort('avg')}>Avg{arrow('avg')}</th>
-              <th>Action</th>
+            </tr>
+            <tr className="scores-min-filter-row">
+              <th className="sticky-action filter-header-cell" aria-hidden />
+              <th className="sticky-after-action filter-header-cell" aria-hidden />
+              <th className="filter-header-cell" aria-hidden />
+              {SCORE_TYPES.map(st => (
+                <th key={st} className="filter-header-cell">
+                  <label className="column-min-label">
+                    <span className="visually-hidden">Min {SCORE_LABELS[st]}</span>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      max="10"
+                      className="column-min-input"
+                      placeholder="Min"
+                      value={columnMins[`score:${st}`] ?? ''}
+                      onChange={e => setMin(`score:${st}`, e.target.value)}
+                      onClick={e => e.stopPropagation()}
+                    />
+                  </label>
+                </th>
+              ))}
+              <th className="filter-header-cell">
+                <label className="column-min-label">
+                  <span className="visually-hidden">Min average</span>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    max="10"
+                    className="column-min-input"
+                    placeholder="Min"
+                    value={columnMins.avg ?? ''}
+                    onChange={e => setMin('avg', e.target.value)}
+                    onClick={e => e.stopPropagation()}
+                  />
+                </label>
+              </th>
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 ? (
-              <tr><td colSpan={SCORE_TYPES.length + 4} className="empty-row">No companies match your criteria.</td></tr>
+              <tr>
+                <td colSpan={colSpan} className="empty-row">
+                  No companies match your criteria.
+                </td>
+              </tr>
             ) : (
               filtered.map(c => (
                 <tr key={c.companyId}>
-                  <td className="sticky-col company-name-cell">{c.companyName}</td>
+                  <td className="sticky-action">
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary"
+                      onClick={() => navigate(`/position-sizing?company=${c.companyId}`)}
+                    >
+                      Pos Size
+                    </button>
+                  </td>
+                  <td className="sticky-after-action company-name-cell">{c.companyName}</td>
                   <td className="ticker-cell">{c.ticker}</td>
                   {SCORE_TYPES.map(st => (
                     <td key={st} className={scoreCellClass(c.scores[st])}>
@@ -156,16 +205,8 @@ export default function ScoresPage() {
                       ) : null}
                     </td>
                   ))}
-                  <td className={scoreCellClass(avg(c.scores) ?? undefined)}>
-                    {fmt(avg(c.scores))}
-                  </td>
-                  <td>
-                    <button
-                      className="btn btn-sm btn-primary"
-                      onClick={() => navigate(`/position-sizing?company=${c.companyId}`)}
-                    >
-                      Size
-                    </button>
+                  <td className={scoreCellClass(avgOfScores(c.scores) ?? undefined)}>
+                    {fmt(avgOfScores(c.scores))}
                   </td>
                 </tr>
               ))

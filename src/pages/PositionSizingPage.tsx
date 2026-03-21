@@ -1,8 +1,9 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useScoresData } from '../hooks/useScores';
+import { useGems, useCompanyRuns } from '../hooks/useData';
 import { SCORE_TYPES, SCORE_LABELS } from '../types';
-import type { ScoreType, CompanyScores } from '../types';
+import type { CompanyScores } from '../types';
 import {
   calculatePositionSize,
   DEFAULT_SCORE_BRACKETS,
@@ -11,8 +12,17 @@ import {
   DEFAULT_CAGR_BRACKETS,
   DEFAULT_CAGR_FLOOR,
   DEFAULT_DOWNSIDE_BRACKETS,
+  AVG_WEIGHTED_SCORE_SUPERIOR_THRESHOLD,
+  AVG_WEIGHTED_SCORE_SUPERIOR_MAX_PCT,
 } from '../lib/positionSizing';
 import type { ScoreThreshold, CagrBracket, SizingResult } from '../lib/positionSizing';
+import { baseCaseGrowthPercentFromRuns } from '../lib/gemMetrics';
+import {
+  buildPositionSizingJson,
+  buildPositionSizingMarkdown,
+  positionSizingReportFilename,
+  saveTextFileWithPicker,
+} from '../lib/exportPositionSizing';
 
 function fmt(v: number | null | undefined, decimals = 1): string {
   if (v == null) return '—';
@@ -21,10 +31,18 @@ function fmt(v: number | null | undefined, decimals = 1): string {
 
 export default function PositionSizingPage() {
   const { companyScores, loading } = useScoresData();
+  const { gems, loading: gemsLoading } = useGems();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const [selectedCompanyId, setSelectedCompanyId] = useState<string>(searchParams.get('company') ?? '');
-  const [cagr, setCagr] = useState<string>('');
+  const [selectedCompanyId, setSelectedCompanyId] = useState(() => searchParams.get('company') ?? '');
+  const [cagr, setCagr] = useState(() => searchParams.get('cagr') ?? '');
+
+  const { runs: companyRuns, loading: companyRunsLoading } = useCompanyRuns(selectedCompanyId);
+
+  const baseCaseGrowthPercent = useMemo(
+    () => (gems.length ? baseCaseGrowthPercentFromRuns(companyRuns, gems) : null),
+    [companyRuns, gems],
+  );
   const [downside, setDownside] = useState<string>('');
   const [showRules, setShowRules] = useState(false);
 
@@ -36,12 +54,32 @@ export default function PositionSizingPage() {
   const [downsideBrackets] = useState(DEFAULT_DOWNSIDE_BRACKETS);
 
   useEffect(() => {
-    const cParam = searchParams.get('company');
-    if (cParam && cParam !== selectedCompanyId) setSelectedCompanyId(cParam);
+    const cParam = searchParams.get('company') ?? '';
+    const cagrParam = searchParams.get('cagr');
+    setSelectedCompanyId(cParam);
+    if (cagrParam !== null) setCagr(cagrParam);
+    else if (cParam) setCagr('');
   }, [searchParams]);
+
+  /** When no CAGR in URL, fill from Base case growth % (latest captured_metrics across gems). */
+  useEffect(() => {
+    const cagrParam = searchParams.get('cagr');
+    if (cagrParam !== null && cagrParam !== '') return;
+    if (!selectedCompanyId || gemsLoading) return;
+    if (companyRunsLoading) return;
+    if (baseCaseGrowthPercent == null) return;
+    setCagr(prev => (prev === '' ? String(baseCaseGrowthPercent) : prev));
+  }, [
+    selectedCompanyId,
+    gemsLoading,
+    companyRunsLoading,
+    baseCaseGrowthPercent,
+    searchParams,
+  ]);
 
   const handleCompanyChange = (id: string) => {
     setSelectedCompanyId(id);
+    setCagr('');
     setSearchParams(id ? { company: id } : {});
   };
 
@@ -61,6 +99,25 @@ export default function PositionSizingPage() {
       downsideBrackets,
     });
   }, [selectedCompany, cagr, downside, scoreBrackets, floorScore, baseMax, cagrBrackets, cagrFloor, downsideBrackets]);
+
+  const exportMarkdown = async () => {
+    if (!selectedCompany || !result) return;
+    const md = buildPositionSizingMarkdown(selectedCompany, cagr, downside, result);
+    const name = positionSizingReportFilename(selectedCompany.ticker, selectedCompany.companyName, 'md');
+    await saveTextFileWithPicker(name, md, 'text/markdown;charset=utf-8', 'md');
+  };
+
+  const exportJson = async () => {
+    if (!selectedCompany || !result) return;
+    const json = buildPositionSizingJson({
+      exportedAt: new Date().toISOString(),
+      company: { name: selectedCompany.companyName, ticker: selectedCompany.ticker },
+      inputs: { cagrPercent: cagr, downsidePercent: downside },
+      result,
+    });
+    const name = positionSizingReportFilename(selectedCompany.ticker, selectedCompany.companyName, 'json');
+    await saveTextFileWithPicker(name, json, 'application/json;charset=utf-8', 'json');
+  };
 
   if (loading) {
     return (
@@ -100,11 +157,19 @@ export default function PositionSizingPage() {
           <input
             type="number"
             step="0.5"
-            placeholder="e.g. 15"
+            placeholder={
+              baseCaseGrowthPercent != null ? `Base case: ${baseCaseGrowthPercent}` : 'e.g. 15'
+            }
             value={cagr}
             onChange={e => setCagr(e.target.value)}
             className="sizing-input"
           />
+          <p className="sizing-field-hint">
+            Default uses <strong>Base case growth %</strong> from your latest captured metrics (same as Metrics).
+            {selectedCompanyId && (gemsLoading || companyRunsLoading) ? (
+              <span className="sizing-hint-loading"> Loading…</span>
+            ) : null}
+          </p>
         </div>
         <div className="sizing-field">
           <label>Expected Downside (%)</label>
@@ -227,7 +292,10 @@ export default function PositionSizingPage() {
             <p className="stage-description">
               Each weighted score (0–10) maps to a maximum position % using the score brackets you
               can adjust. To stay conservative, the calculator takes the <strong>minimum</strong> of
-              all weighted-score caps as your <strong>base position</strong>.
+              all weighted-score caps as a <strong>bracket base</strong>. If the{' '}
+              <strong>average weighted score</strong> (mean of all present scores) is above{' '}
+              {AVG_WEIGHTED_SCORE_SUPERIOR_THRESHOLD}, the base position is set to{' '}
+              {AVG_WEIGHTED_SCORE_SUPERIOR_MAX_PCT}% — this rule supersedes the bracket minimum.
             </p>
             <table className="sizing-breakdown-table">
               <thead>
@@ -244,11 +312,30 @@ export default function PositionSizingPage() {
                 ))}
               </tbody>
               <tfoot>
+                {result.averageWeightedScore != null && (
+                  <tr className="sizing-avg-summary-row">
+                    <td colSpan={2}>
+                      <strong>Average weighted score</strong>
+                    </td>
+                    <td className="num">{fmt(result.averageWeightedScore)}</td>
+                    <td className="rule">
+                      {result.avgScoreRuleApplied
+                        ? `> ${AVG_WEIGHTED_SCORE_SUPERIOR_THRESHOLD} → base ${AVG_WEIGHTED_SCORE_SUPERIOR_MAX_PCT}% (supersedes bracket min ${fmt(result.bracketBasePosition)}%)`
+                        : `≤ ${AVG_WEIGHTED_SCORE_SUPERIOR_THRESHOLD} — bracket min applies`}
+                    </td>
+                  </tr>
+                )}
                 <tr className="stage-total">
                   <td colSpan={2}>
-                    <strong>Base position (min of all)</strong>
-                    {result.baseLimitedBy && (
+                    <strong>Base position</strong>
+                    {!result.avgScoreRuleApplied && result.baseLimitedBy && (
                       <span className="limited-by"> — limited by {SCORE_LABELS[result.baseLimitedBy]}</span>
+                    )}
+                    {result.avgScoreRuleApplied && (
+                      <span className="limited-by">
+                        {' '}
+                        — superior rule (avg &gt; {AVG_WEIGHTED_SCORE_SUPERIOR_THRESHOLD})
+                      </span>
                     )}
                   </td>
                   <td className="num"><strong>{fmt(result.basePosition)}%</strong></td>
@@ -308,6 +395,29 @@ export default function PositionSizingPage() {
                 ? 'Do not invest / Wait for better entry'
                 : `${fmt(result.finalPosition, 2)}% of portfolio`}
             </div>
+          </div>
+
+          <div className="sizing-export">
+            <p className="sizing-export-intro">
+              Export opens your system <strong>Save as</strong> dialog (Chrome / Edge / Opera) so you can pick
+              the folder—e.g. a synced <strong>Google Drive</strong> or <strong>OneDrive</strong> folder.
+              Other browsers save to your default Downloads folder.
+            </p>
+            <div className="sizing-export-buttons">
+              <button type="button" className="btn btn-sm btn-primary" onClick={exportMarkdown}>
+                Export report (.md)
+              </button>
+              <button type="button" className="btn btn-sm btn-ghost" onClick={exportJson}>
+                Export data (.json)
+              </button>
+            </div>
+            <p className="sizing-export-filename-hint">
+              Files use names like{' '}
+              <code className="sizing-filename-example">
+                Tjiunardi_PosSize_MSFT_Microsoft_2026-03-21_14-30-52.md
+              </code>{' '}
+              (ticker, company, date, time)
+            </p>
           </div>
         </div>
       ) : null}

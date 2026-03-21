@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
-import { supabase } from '../supabase';
+import { fetchAllCompanies, fetchAllScoresGemRuns } from '../lib/supabasePaged';
 import type { Company, GemRun, CompanyScores, ScoreType } from '../types';
 import { SCORE_TYPES } from '../types';
 
@@ -17,21 +17,24 @@ export function useScoresData() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
-      supabase.from('companies').select('*'),
-      supabase
-        .from('gem_runs')
-        .select('*')
-        .or('weighted_score.not.is.null,captured_metrics.not.is.null')
-        .not('score_type', 'is', null)
-        .order('completed_at', { ascending: false }),
-    ]).then(([compRes, runRes]) => {
-      if (cancelled) return;
-      if (!compRes.error && compRes.data) setCompanies(compRes.data as Company[]);
-      if (!runRes.error && runRes.data) setRuns(runRes.data as GemRun[]);
-      setLoading(false);
-    });
-    return () => { cancelled = true; };
+    Promise.all([fetchAllCompanies(), fetchAllScoresGemRuns()])
+      .then(([comps, runRows]) => {
+        if (cancelled) return;
+        setCompanies(comps);
+        setRuns(runRows);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCompanies([]);
+          setRuns([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const companyScores = useMemo((): CompanyScores[] => {

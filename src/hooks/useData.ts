@@ -1,5 +1,11 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../supabase';
+import {
+  fetchAllCompanies,
+  fetchAllGemRunsByCreatedAtDesc,
+  fetchAllGemRunsForCompany,
+  fetchAllGemRunsForGem,
+} from '../lib/supabasePaged';
 import type { Company, Gem, GemCategory, GemRun } from '../types';
 
 export function useCompanies() {
@@ -7,13 +13,10 @@ export function useCompanies() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    supabase
-      .from('companies')
-      .select('*')
-      .then(({ data, error }) => {
-        if (!error && data) setCompanies(data as Company[]);
-        setLoading(false);
-      });
+    fetchAllCompanies()
+      .then(setCompanies)
+      .catch(() => setCompanies([]))
+      .finally(() => setLoading(false));
   }, []);
 
   return { companies, loading };
@@ -60,14 +63,10 @@ export function useAllRuns() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    supabase
-      .from('gem_runs')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .then(({ data, error }) => {
-        if (!error && data) setRuns(data as GemRun[]);
-        setLoading(false);
-      });
+    fetchAllGemRunsByCreatedAtDesc()
+      .then(setRuns)
+      .catch(() => setRuns([]))
+      .finally(() => setLoading(false));
   }, []);
 
   return { runs, loading };
@@ -83,15 +82,10 @@ export function useGemRuns(gemId: string) {
       return;
     }
     setLoading(true);
-    supabase
-      .from('gem_runs')
-      .select('*')
-      .eq('gem_id', gemId)
-      .order('created_at', { ascending: false })
-      .then(({ data, error }) => {
-        if (!error && data) setRuns(data as GemRun[]);
-        setLoading(false);
-      });
+    fetchAllGemRunsForGem(gemId)
+      .then(setRuns)
+      .catch(() => setRuns([]))
+      .finally(() => setLoading(false));
   }, [gemId]);
 
   return { runs, loading };
@@ -107,15 +101,10 @@ export function useCompanyRuns(companyId: string) {
       return;
     }
     setLoading(true);
-    supabase
-      .from('gem_runs')
-      .select('*')
-      .eq('company_id', companyId)
-      .order('created_at', { ascending: false })
-      .then(({ data, error }) => {
-        if (!error && data) setRuns(data as GemRun[]);
-        setLoading(false);
-      });
+    fetchAllGemRunsForCompany(companyId)
+      .then(setRuns)
+      .catch(() => setRuns([]))
+      .finally(() => setLoading(false));
   }, [companyId]);
 
   return { runs, loading };
