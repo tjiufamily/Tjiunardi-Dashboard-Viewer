@@ -70,7 +70,10 @@ export const SCORE_LABELS: Record<ScoreType, string> = {
   moat: 'Lollapalooza Moat',
 };
 
-/** Shown as tooltip on score columns — each score comes from that gem’s weighted run. */
+/**
+ * Fallback when a gem has no `description` in Supabase. Hover text prefers `gems.description`
+ * from the latest run per score type (see `useScores` → `scoreColumnDescriptions`).
+ */
 export const SCORE_COLUMN_HELP: Record<ScoreType, string> = {
   compounder_checklist:
     'Weighted score from the Stock Compounder Checklist gem (latest run per company).',

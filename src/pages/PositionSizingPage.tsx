@@ -30,7 +30,7 @@ function fmt(v: number | null | undefined, decimals = 1): string {
 }
 
 export default function PositionSizingPage() {
-  const { companyScores, loading } = useScoresData();
+  const { companyScores, loading, scoreColumnDescriptions } = useScoresData();
   const { gems, loading: gemsLoading } = useGems();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -304,7 +304,7 @@ export default function PositionSizingPage() {
               <tbody>
                 {result.metricResults.map(m => (
                   <tr key={m.scoreType} className={m.maxPct === 0 && m.score != null ? 'row-danger' : m.score == null ? 'row-na' : ''}>
-                    <td>{SCORE_LABELS[m.scoreType]}</td>
+                    <td title={scoreColumnDescriptions[m.scoreType]}>{SCORE_LABELS[m.scoreType]}</td>
                     <td className="num">{fmt(m.score)}</td>
                     <td className="num">{fmt(m.maxPct)}%</td>
                     <td className="rule">{m.bracket}</td>

@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useScoresData } from '../hooks/useScores';
-import { SCORE_TYPES, SCORE_LABELS, SCORE_COLUMN_HELP } from '../types';
+import { SCORE_TYPES, SCORE_LABELS } from '../types';
 import type { ScoreType, CompanyScores } from '../types';
 import { avgOfScores, rowPassesColumnMins } from '../lib/columnMinFilters';
 
@@ -14,7 +14,7 @@ function fmt(v: number | null | undefined): string {
 }
 
 export default function ScoresPage() {
-  const { companyScores, loading } = useScoresData();
+  const { companyScores, loading, scoreColumnDescriptions } = useScoresData();
   const navigate = useNavigate();
 
   const [sortKey, setSortKey] = useState<SortKey>('name');
@@ -128,7 +128,7 @@ export default function ScoresPage() {
                   key={st}
                   className="score-type-heading"
                   onClick={() => toggleSort(st)}
-                  title={SCORE_COLUMN_HELP[st]}
+                  title={scoreColumnDescriptions[st]}
                 >
                   {SCORE_LABELS[st]}
                   {arrow(st)}
@@ -200,9 +200,6 @@ export default function ScoresPage() {
                   {SCORE_TYPES.map(st => (
                     <td key={st} className={scoreCellClass(c.scores[st])}>
                       {fmt(c.scores[st])}
-                      {c.scores[st] != null && st === 'antifragile' && c.rawScores[st] != null ? (
-                        <span className="raw-hint" title={`Raw: ${c.rawScores[st]}/100`}>*</span>
-                      ) : null}
                     </td>
                   ))}
                   <td className={scoreCellClass(avgOfScores(c.scores) ?? undefined)}>

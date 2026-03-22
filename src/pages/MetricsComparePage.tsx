@@ -5,7 +5,6 @@ import { useScoresData } from '../hooks/useScores';
 import {
   SCORE_TYPES,
   SCORE_LABELS,
-  SCORE_COLUMN_HELP,
   type ScoreType,
   type CompanyScores,
 } from '../types';
@@ -102,7 +101,7 @@ export default function MetricsComparePage() {
   }, [selectedGemId]);
 
   const { runs, loading: gemRunsLoading } = useGemRuns(selectedGemId);
-  const { companyScores, loading: scoresLoading } = useScoresData();
+  const { companyScores, loading: scoresLoading, scoreColumnDescriptions } = useScoresData();
 
   const scoresByCompany = useMemo(() => {
     const m = new Map<string, CompanyScores>();
@@ -353,7 +352,7 @@ export default function MetricsComparePage() {
                     <th
                       key={st}
                       className="score-type-heading"
-                      title={SCORE_COLUMN_HELP[st]}
+                      title={scoreColumnDescriptions[st]}
                       onClick={() => toggleSort(st)}
                     >
                       {SCORE_LABELS[st]}
@@ -447,9 +446,6 @@ export default function MetricsComparePage() {
                       {SCORE_TYPES.map(st => (
                         <td key={st} className={scoreCellClass(r.scores[st])}>
                           {fmtScore(r.scores[st])}
-                          {r.scores[st] != null && st === 'antifragile' && r.rawScores[st] != null ? (
-                            <span className="raw-hint" title={`Raw: ${r.rawScores[st]}/100`}>*</span>
-                          ) : null}
                         </td>
                       ))}
                       <td className={scoreCellClass(avgOfScores(r.scores) ?? undefined)}>

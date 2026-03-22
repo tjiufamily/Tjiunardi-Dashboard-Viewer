@@ -1,5 +1,5 @@
 import { supabase } from '../supabase';
-import type { Company, GemRun } from '../types';
+import type { Company, Gem, GemRun } from '../types';
 
 /** PostgREST default max rows per request; fetch in pages to get full tables. */
 const PAGE_SIZE = 1000;
@@ -11,6 +11,24 @@ export async function fetchAllCompanies(): Promise<Company[]> {
     const { data, error } = await supabase.from('companies').select('*').range(offset, offset + PAGE_SIZE - 1);
     if (error) throw error;
     const chunk = (data ?? []) as Company[];
+    all.push(...chunk);
+    if (chunk.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
+  }
+  return all;
+}
+
+export async function fetchAllGems(): Promise<Gem[]> {
+  const all: Gem[] = [];
+  let offset = 0;
+  for (;;) {
+    const { data, error } = await supabase
+      .from('gems')
+      .select('*')
+      .order('rank', { ascending: true, nullsFirst: false })
+      .range(offset, offset + PAGE_SIZE - 1);
+    if (error) throw error;
+    const chunk = (data ?? []) as Gem[];
     all.push(...chunk);
     if (chunk.length < PAGE_SIZE) break;
     offset += PAGE_SIZE;
