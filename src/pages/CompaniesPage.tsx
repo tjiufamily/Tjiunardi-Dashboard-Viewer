@@ -408,6 +408,33 @@ export default function CompaniesPage() {
                   <div className="company-card-header">
                     <span className="company-ticker">{company.ticker}</span>
                     <div className="company-card-header-badges">
+                      {company.investor_relations_url ? (
+                        <a
+                          href={company.investor_relations_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="ir-badge"
+                          title="Investor Relations"
+                          aria-label={`Open investor relations for ${company.name} in a new tab`}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden
+                          >
+                            <path d="M14 3h7v7" />
+                            <path d="M10 14L21 3" />
+                          </svg>
+                          <span className="ir-badge-text">IR</span>
+                        </a>
+                      ) : null}
                       {reportCount > 0 && (
                         <span className="report-badge">
                           {reportCount} {reportCount === 1 ? 'report' : 'reports'}

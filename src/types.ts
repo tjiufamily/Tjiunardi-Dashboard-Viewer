@@ -2,6 +2,8 @@ export interface Company {
   id: string;
   name: string;
   ticker: string;
+  /** Optional investor relations page URL shown on company UI. */
+  investor_relations_url?: string | null;
   /** Optional Finnhub/Stooq symbol override for quotes (e.g. `SAP.DE`, `BP.L`) when `ticker` alone fails. */
   quote_ticker?: string | null;
   financial_object_key: string | null;

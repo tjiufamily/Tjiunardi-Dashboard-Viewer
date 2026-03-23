@@ -579,6 +579,27 @@ a.btn { text-decoration: none; color: inherit; }
   border-radius: var(--radius-full);
 }
 
+.ir-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 0.7rem; font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  border: 1px solid rgba(99, 102, 241, 0.22);
+  transition: background var(--transition), border-color var(--transition), transform var(--transition);
+  white-space: nowrap;
+}
+.ir-badge svg { opacity: 0.9; }
+.ir-badge:hover {
+  background: rgba(99, 102, 241, 0.18);
+  border-color: rgba(99, 102, 241, 0.42);
+  transform: translateY(-1px);
+}
+
+.detail-ir-link { padding: 7px 12px; }
+.detail-ir-text { display: inline; }
+
 .company-name {
   font-size: 1.05rem; font-weight: 600;
   letter-spacing: -0.01em;
@@ -1071,6 +1092,7 @@ a.btn { text-decoration: none; color: inherit; }
 
   .detail-header { flex-wrap: wrap; gap: 10px; }
   .detail-title-row h2 { font-size: 1.25rem; }
+  .detail-ir-text { display: none; }
 
   .run-card { flex-direction: column; align-items: flex-start; gap: 12px; }
   .run-card-right { align-self: flex-end; }

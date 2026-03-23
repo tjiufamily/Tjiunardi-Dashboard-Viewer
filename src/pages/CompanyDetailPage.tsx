@@ -217,6 +217,32 @@ export default function CompanyDetailPage() {
           <span className="detail-run-count">
             {runs.length} {runs.length === 1 ? 'report' : 'reports'}
           </span>
+          {company.investor_relations_url ? (
+            <a
+              href={company.investor_relations_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn btn-ghost btn-sm detail-ir-link"
+              aria-label={`Open investor relations for ${company.name} in a new tab`}
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <path d="M14 3h7v7" />
+                <path d="M10 14L21 3" />
+                <path d="M21 14v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6" />
+              </svg>
+              <span className="detail-ir-text">Investor Relations</span>
+            </a>
+          ) : null}
         </div>
         {/* Mobile toggle */}
         <button
