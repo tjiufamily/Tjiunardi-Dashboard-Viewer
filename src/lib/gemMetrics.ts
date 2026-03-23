@@ -64,3 +64,175 @@ export function baseCaseGrowthPercentFromRuns(runs: GemRun[], gems: Gem[]): numb
   }
   return null;
 }
+
+/** Match "Value Compounding Analyst V3.3" (or similar) by name. */
+export function findValueCompoundingAnalystGem(gems: Gem[]): Gem | undefined {
+  return (
+    gems.find(g => /value\s*:?\s*compounding\s*analyst\s*v3\.?3/i.test(g.name ?? '')) ??
+    gems.find(g => (g.name ?? '').toLowerCase().includes('value compounding analyst'))
+  );
+}
+
+/** Latest run for a gem (runs newest-first). */
+export function latestRunForGem(companyRuns: GemRun[], gemId: string): GemRun | undefined {
+  return companyRuns.find(r => r.gem_id === gemId);
+}
+
+/** Raw storageKey patterns (capture may omit friendly labels). */
+function looksLikeTenYearTargetStorageKey(k: string): boolean {
+  const r = k.toLowerCase();
+  return (
+    /(10|ten).*(target|tgt|px|price)/.test(r) ||
+    /(target|tgt|price).*(10|ten|yr|year|decade)/.test(r) ||
+    /(10yr|10_yr|10-yr|ten_yr|yr10|y10)/.test(r)
+  );
+}
+
+/** Metric for 10-year target stock price (labels + storage keys; tolerant of wording). */
+export function tenYearTargetPriceMetricKey(gem: Gem | undefined, metricKeys: string[]): string | undefined {
+  type Scored = { k: string; score: number };
+  const scored: Scored[] = [];
+
+  for (const k of metricKeys) {
+    const L = labelForMetricKey(gem, k).toLowerCase();
+    const raw = k.toLowerCase();
+    let score = 0;
+
+    if (looksLikeTenYearTargetStorageKey(k)) score += 6;
+    if (L.includes('target') || raw.includes('target')) score += 3;
+    if (/\b10\b|10y|10-y|10-yr|10yr|\bten\b|decade/i.test(L) || /\b10\b|10y|10yr|ten_|ten/i.test(raw)) score += 2;
+    if (/\b(yr|y|year|annual)\b|yr_|y_|year_/i.test(L) || /(yr|year|y_|_y)/i.test(raw)) score += 1;
+    if (L.includes('price') || L.includes('share') || L.includes('$') || /price|px|share/.test(raw)) score += 1;
+
+    const hasTarget = L.includes('target') || raw.includes('target') || looksLikeTenYearTargetStorageKey(k);
+    const hasHorizon =
+      /\b10\b|\bten\b|10y|10-yr|10yr|10\s*y|10\s*yr|decade/i.test(L) ||
+      /\b10\b|10y|10yr|ten|decade|yr|year/i.test(raw);
+    if (hasTarget && hasHorizon) score += 4;
+
+    if (score >= 6) scored.push({ k, score });
+  }
+
+  if (scored.length > 0) {
+    scored.sort((a, b) => b.score - a.score);
+    return scored[0].k;
+  }
+
+  for (const k of metricKeys) {
+    const L = labelForMetricKey(gem, k).toLowerCase();
+    const has10 = /\b10\b.*\b(yr|y|year)\b|\b(yr|y|year)\b.*\b10\b|10yr|10-yr|10y\b|10\s*yr|ten\s*year|ten\s*yr/i.test(
+      L,
+    );
+    const hasTarget = L.includes('target');
+    if (!hasTarget || !has10) continue;
+    if (L.includes('price') || L.includes('share') || L.includes('stock')) return k;
+    return k;
+  }
+
+  for (const k of metricKeys) {
+    if (looksLikeTenYearTargetStorageKey(k)) return k;
+  }
+
+  return undefined;
+}
+
+/** "10 Y Total CAGR %" style column. */
+export function tenYearTotalCagrMetricKey(gem: Gem | undefined, metricKeys: string[]): string | undefined {
+  for (const k of metricKeys) {
+    const L = labelForMetricKey(gem, k).toLowerCase();
+    if (!L.includes('cagr')) continue;
+    if (L.includes('total') && (/\b10\b/.test(L) || L.includes('10 y') || L.includes('10y'))) return k;
+  }
+  return undefined;
+}
+
+/** "5 Y value compounding" style column from Value Compounding Analyst. */
+export function fiveYearValueCompoundingMetricKey(gem: Gem | undefined, metricKeys: string[]): string | undefined {
+  for (const k of metricKeys) {
+    const L = labelForMetricKey(gem, k).toLowerCase();
+    if (!L.includes('compounding')) continue;
+    if ((/\b5\b/.test(L) || L.includes('5 y') || L.includes('5y')) && L.includes('value')) return k;
+  }
+  return undefined;
+}
+
+export function baseCaseGrowthMetricKey(gem: Gem | undefined, metricKeys: string[]): string | undefined {
+  return primaryCagrMetricStorageKey(gem, metricKeys);
+}
+
+/** Expected annual CAGR (%) from current price to target price over `years`. */
+export function impliedCagrPercentFromPrices(
+  currentPrice: number,
+  targetPrice: number,
+  years = 10,
+): number | null {
+  if (
+    currentPrice <= 0 ||
+    targetPrice <= 0 ||
+    !Number.isFinite(currentPrice) ||
+    !Number.isFinite(targetPrice) ||
+    years <= 0
+  ) {
+    return null;
+  }
+  const r = Math.pow(targetPrice / currentPrice, 1 / years) - 1;
+  return r * 100;
+}
+
+/** Which captured / derived figure feeds the position-sizing CAGR input. */
+export type CagrSource = 'implied' | 'base_case' | 'ten_y_total' | 'five_y_vc' | 'custom';
+
+export type ValueCompoundingCagrOptions = {
+  baseCase: number | null;
+  tenYearTotalCagr: number | null;
+  fiveYearValueCompounding: number | null;
+  tenYearTargetPrice: number | null;
+  impliedTenYearCagrPercent: number | null;
+};
+
+export function valueCompoundingCagrOptionsFromRun(
+  vcaGem: Gem | undefined,
+  latestRun: GemRun | undefined,
+  delayedPrice: number | null | undefined,
+): ValueCompoundingCagrOptions {
+  const empty: ValueCompoundingCagrOptions = {
+    baseCase: null,
+    tenYearTotalCagr: null,
+    fiveYearValueCompounding: null,
+    tenYearTargetPrice: null,
+    impliedTenYearCagrPercent: null,
+  };
+  if (!vcaGem || !latestRun?.captured_metrics) return empty;
+  const cm = latestRun.captured_metrics;
+  const keys = metricStorageKeysForGem(vcaGem, [latestRun]);
+  const bk = baseCaseGrowthMetricKey(vcaGem, keys);
+  const tk = tenYearTargetPriceMetricKey(vcaGem, keys);
+  const c10 = tenYearTotalCagrMetricKey(vcaGem, keys);
+  const c5 = fiveYearValueCompoundingMetricKey(vcaGem, keys);
+  const num = (k: string | undefined): number | null => {
+    if (k == null) return null;
+    const v = cm[k];
+    if (typeof v !== 'number' || Number.isNaN(v)) return null;
+    return v;
+  };
+  const baseCase = num(bk);
+  const tenYearTotalCagr = num(c10);
+  const fiveYearValueCompounding = num(c5);
+  const tenYearTargetPrice = num(tk);
+  let impliedTenYearCagrPercent: number | null = null;
+  if (
+    delayedPrice != null &&
+    delayedPrice > 0 &&
+    tenYearTargetPrice != null &&
+    tenYearTargetPrice > 0
+  ) {
+    impliedTenYearCagrPercent = impliedCagrPercentFromPrices(delayedPrice, tenYearTargetPrice, 10);
+  }
+  return {
+    baseCase,
+    tenYearTotalCagr,
+    fiveYearValueCompounding,
+    tenYearTargetPrice,
+    impliedTenYearCagrPercent,
+  };
+}

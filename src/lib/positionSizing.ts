@@ -13,10 +13,15 @@ export const DEFAULT_SCORE_BRACKETS: ScoreThreshold[] = [
 export const DEFAULT_FLOOR_SCORE = 7;
 export const DEFAULT_BASE_MAX = 5;
 
-/** When mean of all present weighted scores exceeds this, base position uses `AVG_SCORE_SUPERIOR_MAX_PCT` (overrides per-metric bracket minimum). */
-export const AVG_WEIGHTED_SCORE_SUPERIOR_THRESHOLD = 9;
-/** Fixed base position % when average weighted score is above `AVG_WEIGHTED_SCORE_SUPERIOR_THRESHOLD`. */
-export const AVG_WEIGHTED_SCORE_SUPERIOR_MAX_PCT = 5;
+/** Default: when mean of all present weighted scores exceeds this, base position uses `avgSuperiorMaxPct` (overrides per-metric bracket minimum). */
+export const DEFAULT_AVG_SUPERIOR_THRESHOLD = 9;
+/** Default base position % when average weighted score is above the superior threshold. */
+export const DEFAULT_AVG_SUPERIOR_MAX_PCT = 5;
+
+/** @deprecated use DEFAULT_AVG_SUPERIOR_THRESHOLD */
+export const AVG_WEIGHTED_SCORE_SUPERIOR_THRESHOLD = DEFAULT_AVG_SUPERIOR_THRESHOLD;
+/** @deprecated use DEFAULT_AVG_SUPERIOR_MAX_PCT */
+export const AVG_WEIGHTED_SCORE_SUPERIOR_MAX_PCT = DEFAULT_AVG_SUPERIOR_MAX_PCT;
 
 export type CagrBracket = { minCagr: number; multiplier: number };
 
@@ -41,6 +46,108 @@ export const DEFAULT_DOWNSIDE_BRACKETS: DownsideBracket[] = [
   { maxDownside: 10, haircut: 1.0 },
 ];
 
+/** Five quality metrics + their average drive Stage 3 (probability) multipliers (six values vs. tier thresholds). */
+export const PROBABILITY_SCORE_TYPES: ScoreType[] = [
+  'compounder_checklist',
+  'terminal_value',
+  'antifragile',
+  'competitive_advantage',
+  'moat',
+];
+
+export type ProbabilityTierRule = { minAbove: number; multiplier: number };
+
+export const DEFAULT_PROBABILITY_TIERS: ProbabilityTierRule[] = [
+  { minAbove: 9, multiplier: 2 },
+  { minAbove: 8.5, multiplier: 1.5 },
+  { minAbove: 8, multiplier: 1 },
+  { minAbove: 7.5, multiplier: 0.8 },
+  { minAbove: 7, multiplier: 0.5 },
+];
+
+/** If all six values (5 metrics + avg) are strictly below this, multiplier is 0. */
+export const DEFAULT_PROBABILITY_ALL_BELOW = 7;
+
+export type ProbabilityMultiplierOptions = {
+  tiers?: ProbabilityTierRule[];
+  allBelow?: number;
+};
+
+export type ProbabilityDetail = { scoreType: ScoreType; value: number | null };
+
+export type ProbabilityMultiplierResult = {
+  details: ProbabilityDetail[];
+  /** Mean of the five probability metric scores (when all five present). */
+  averageMetrics: number | null;
+  multiplier: number;
+  note: string;
+  skipped: boolean;
+};
+
+function normalizeTiers(tiers: ProbabilityTierRule[]): ProbabilityTierRule[] {
+  return [...tiers].sort((a, b) => b.minAbove - a.minAbove);
+}
+
+export function computeProbabilityMultiplier(
+  scores: Partial<Record<ScoreType, number>>,
+  options?: ProbabilityMultiplierOptions,
+): ProbabilityMultiplierResult {
+  const tiers = normalizeTiers(options?.tiers?.length ? options.tiers : DEFAULT_PROBABILITY_TIERS);
+  const allBelow = options?.allBelow ?? DEFAULT_PROBABILITY_ALL_BELOW;
+
+  const details: ProbabilityDetail[] = PROBABILITY_SCORE_TYPES.map(st => ({
+    scoreType: st,
+    value: scores[st] ?? null,
+  }));
+  const five = details.map(d => d.value);
+  if (five.some(v => v == null)) {
+    const present = five.filter((v): v is number => v != null);
+    const avg = present.length ? present.reduce((a, b) => a + b, 0) / present.length : null;
+    return {
+      details,
+      averageMetrics: avg,
+      multiplier: 1,
+      note:
+        'Incomplete Stock Compounder / Terminal / Antifragile / Competitive / Moat scores — probability stage skipped (×1).',
+      skipped: true,
+    };
+  }
+  const vals = five as number[];
+  const averageMetrics = vals.reduce((a, b) => a + b, 0) / 5;
+  const six = [...vals, averageMetrics];
+
+  const allGT = (t: number) => six.every(s => s > t);
+  const allLT = (t: number) => six.every(s => s < t);
+
+  for (const tier of tiers) {
+    if (allGT(tier.minAbove)) {
+      return {
+        details,
+        averageMetrics,
+        multiplier: tier.multiplier,
+        note: `All six (5 metrics + avg) > ${tier.minAbove} → ×${tier.multiplier}`,
+        skipped: false,
+      };
+    }
+  }
+  if (allLT(allBelow)) {
+    return {
+      details,
+      averageMetrics,
+      multiplier: 0,
+      note: `All six < ${allBelow} → ×0`,
+      skipped: false,
+    };
+  }
+  return {
+    details,
+    averageMetrics,
+    multiplier: 0,
+    note: `Mixed / boundary vs ${allBelow} — ×0 (conservative)`,
+    skipped: false,
+  };
+}
+
 export type SizingInputs = {
   scores: Partial<Record<ScoreType, number>>;
   cagr: number | null;
@@ -51,6 +158,10 @@ export type SizingInputs = {
   cagrBrackets: CagrBracket[];
   cagrFloor: number;
   downsideBrackets: DownsideBracket[];
+  avgSuperiorThreshold: number;
+  avgSuperiorMaxPct: number;
+  probabilityTiers: ProbabilityTierRule[];
+  probabilityAllBelow: number;
 };
 
 export type MetricResult = {
@@ -65,13 +176,22 @@ export type SizingResult = {
   /** Minimum of per-metric bracket caps (before average-score superior rule). */
   bracketBasePosition: number;
   averageWeightedScore: number | null;
-  /** True when average weighted score &gt; threshold: base uses `AVG_WEIGHTED_SCORE_SUPERIOR_MAX_PCT` instead of bracket min. */
+  /** True when average weighted score &gt; threshold: base uses superior max % instead of bracket min. */
   avgScoreRuleApplied: boolean;
+  avgSuperiorThreshold: number;
+  avgSuperiorMaxPct: number;
   basePosition: number;
   baseLimitedBy: ScoreType | null;
   cagrMultiplier: number | null;
   cagrNote: string;
   afterCagr: number;
+  probabilityDetails: ProbabilityDetail[];
+  /** Mean of the five probability metric scores. */
+  probabilityAverage: number | null;
+  probabilityMultiplier: number;
+  probabilityNote: string;
+  probabilitySkipped: boolean;
+  afterProbability: number;
   downsideHaircut: number | null;
   downsideNote: string;
   finalPosition: number;
@@ -88,7 +208,7 @@ function resolveScoreBracket(
   score: number,
   brackets: ScoreThreshold[],
   floorScore: number,
-  baseMax: number
+  baseMax: number,
 ): { maxPct: number; bracket: string } {
   const sorted = [...brackets].sort((a, b) => b.minScore - a.minScore);
   for (const b of sorted) {
@@ -131,13 +251,11 @@ export function calculatePositionSize(inputs: SizingInputs): SizingResult {
   const averageWeightedScore = meanWeightedScore(inputs.scores);
   let basePosition = bracketBasePosition;
   let avgScoreRuleApplied = false;
-  if (
-    averageWeightedScore != null &&
-    averageWeightedScore > AVG_WEIGHTED_SCORE_SUPERIOR_THRESHOLD &&
-    scoredMetrics.length > 0
-  ) {
+  const supT = inputs.avgSuperiorThreshold;
+  const supMax = inputs.avgSuperiorMaxPct;
+  if (averageWeightedScore != null && averageWeightedScore > supT && scoredMetrics.length > 0) {
     avgScoreRuleApplied = true;
-    basePosition = AVG_WEIGHTED_SCORE_SUPERIOR_MAX_PCT;
+    basePosition = supMax;
     baseLimitedBy = null;
   }
 
@@ -168,12 +286,18 @@ export function calculatePositionSize(inputs: SizingInputs): SizingResult {
     }
   }
 
+  const prob = computeProbabilityMultiplier(inputs.scores, {
+    tiers: inputs.probabilityTiers,
+    allBelow: inputs.probabilityAllBelow,
+  });
+  let afterProbability = Math.round(afterCagr * prob.multiplier * 100) / 100;
+
   let downsideHaircut: number | null = null;
   let downsideNote = '';
-  let finalPosition = afterCagr;
+  let finalPosition = afterProbability;
 
   if (inputs.downside == null) {
-    downsideNote = 'Downside not entered — using post-CAGR position as-is.';
+    downsideNote = 'Downside not entered — using post-probability position as-is.';
     warnings.push('Enter expected downside to refine sizing.');
   } else {
     const sorted = [...inputs.downsideBrackets].sort((a, b) => b.maxDownside - a.maxDownside);
@@ -186,8 +310,8 @@ export function calculatePositionSize(inputs: SizingInputs): SizingResult {
           finalPosition = 0;
         } else {
           downsideHaircut = b.haircut;
-          downsideNote = `Downside ${inputs.downside}% > ${b.maxDownside}% → ${Math.round(b.haircut * 100)}% of post-CAGR`;
-          finalPosition = afterCagr * b.haircut;
+          downsideNote = `Downside ${inputs.downside}% > ${b.maxDownside}% → ${Math.round(b.haircut * 100)}% of post-probability`;
+          finalPosition = afterProbability * b.haircut;
         }
         matched = true;
         break;
@@ -196,7 +320,7 @@ export function calculatePositionSize(inputs: SizingInputs): SizingResult {
     if (!matched) {
       downsideHaircut = 1;
       downsideNote = `Downside ${inputs.downside}% ≤ ${sorted[sorted.length - 1]?.maxDownside ?? 10}% → 100%`;
-      finalPosition = afterCagr;
+      finalPosition = afterProbability;
     }
   }
 
@@ -208,11 +332,20 @@ export function calculatePositionSize(inputs: SizingInputs): SizingResult {
     averageWeightedScore:
       averageWeightedScore == null ? null : Math.round(averageWeightedScore * 100) / 100,
     avgScoreRuleApplied,
+    avgSuperiorThreshold: supT,
+    avgSuperiorMaxPct: supMax,
     basePosition,
     baseLimitedBy,
     cagrMultiplier,
     cagrNote,
     afterCagr: Math.round(afterCagr * 100) / 100,
+    probabilityDetails: prob.details,
+    probabilityAverage:
+      prob.averageMetrics == null ? null : Math.round(prob.averageMetrics * 100) / 100,
+    probabilityMultiplier: prob.multiplier,
+    probabilityNote: prob.note,
+    probabilitySkipped: prob.skipped,
+    afterProbability,
     downsideHaircut,
     downsideNote,
     finalPosition,

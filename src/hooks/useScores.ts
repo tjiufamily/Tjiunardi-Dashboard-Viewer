@@ -129,7 +129,14 @@ export function useScoresData() {
         scores[st] = val.norm;
         rawScores[st] = val.raw;
       }
-      result.push({ companyId, companyName: co.name, ticker: co.ticker, scores, rawScores });
+      result.push({
+        companyId,
+        companyName: co.name,
+        ticker: co.ticker,
+        quote_ticker: co.quote_ticker,
+        scores,
+        rawScores,
+      });
     }
 
     return result.sort((a, b) => a.companyName.localeCompare(b.companyName));

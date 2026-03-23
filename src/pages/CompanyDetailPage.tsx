@@ -1,20 +1,92 @@
-import { useState, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useState, useMemo, useEffect } from 'react';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useCompanies, useGems, useCategories, useCompanyRuns } from '../hooks/useData';
+import type { GemRun } from '../types';
 
-type GemSort = 'name-asc' | 'name-desc' | 'rank' | 'reports-desc';
+type GemSort =
+  | 'name-asc'
+  | 'name-desc'
+  | 'rank'
+  | 'reports-desc'
+  | 'weighted-desc'
+  | 'multiple-desc';
+
+/** Normalize 0–100 vs 0–10 weighted scores for sorting. */
+function normalizedWeightedScore(raw: number): number {
+  return raw > 10 ? raw / 10 : raw;
+}
+
+function gemRunsStats(runs: GemRun[] | undefined) {
+  if (!runs?.length) {
+    return {
+      hasWeighted: false,
+      maxWeightedNorm: Number.NEGATIVE_INFINITY,
+      distinctScoreTypes: 0,
+      hasMultipleScoreTypes: false,
+    };
+  }
+  let hasWeighted = false;
+  let maxWeightedNorm = Number.NEGATIVE_INFINITY;
+  const types = new Set<string>();
+  for (const r of runs) {
+    if (r.weighted_score != null) {
+      hasWeighted = true;
+      maxWeightedNorm = Math.max(maxWeightedNorm, normalizedWeightedScore(r.weighted_score));
+    }
+    if (r.score_type) types.add(r.score_type);
+  }
+  const distinctScoreTypes = types.size;
+  return {
+    hasWeighted,
+    maxWeightedNorm: hasWeighted ? maxWeightedNorm : Number.NEGATIVE_INFINITY,
+    distinctScoreTypes,
+    hasMultipleScoreTypes: distinctScoreTypes >= 2,
+  };
+}
+
+const GEM_SORT_VALUES: GemSort[] = [
+  'name-asc',
+  'name-desc',
+  'rank',
+  'reports-desc',
+  'weighted-desc',
+  'multiple-desc',
+];
+
+function parseGemSortParam(sp: URLSearchParams): GemSort {
+  const raw = sp.get('gemSort');
+  if (raw && GEM_SORT_VALUES.includes(raw as GemSort)) return raw as GemSort;
+  return 'rank';
+}
 
 export default function CompanyDetailPage() {
   const { companyId } = useParams<{ companyId: string }>();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { companies, loading: companiesLoading } = useCompanies();
   const { gems, loading: gemsLoading } = useGems();
   const { categories } = useCategories();
   const { runs, loading: runsLoading } = useCompanyRuns(companyId ?? '');
 
   const [selectedGemId, setSelectedGemId] = useState<string | null>(null);
-  const [gemSort, setGemSort] = useState<GemSort>('rank');
+  const [gemSort, setGemSort] = useState<GemSort>(() => parseGemSortParam(searchParams));
   const [onlyWithRuns, setOnlyWithRuns] = useState(true);
+
+  useEffect(() => {
+    setGemSort(parseGemSortParam(searchParams));
+  }, [companyId, searchParams]);
+
+  const setGemSortFromUi = (v: GemSort) => {
+    setGemSort(v);
+    setSearchParams(
+      prev => {
+        const next = new URLSearchParams(prev);
+        next.set('gemSort', v);
+        return next;
+      },
+      { replace: true },
+    );
+  };
   const [gemSearch, setGemSearch] = useState('');
   // On mobile (≤768px), show Gems sidebar by default so users don't need to tap the hamburger
   const [showGemPanel, setShowGemPanel] = useState(() =>
@@ -39,6 +111,14 @@ export default function CompanyDetailPage() {
     return map;
   }, [categories]);
 
+  const gemStatsById = useMemo(() => {
+    const m = new Map<string, ReturnType<typeof gemRunsStats>>();
+    for (const g of gems) {
+      m.set(g.id, gemRunsStats(runsByGem.get(g.id)));
+    }
+    return m;
+  }, [gems, runsByGem]);
+
   const filteredGems = useMemo(() => {
     let result = [...gems];
     if (gemSearch) {
@@ -49,15 +129,49 @@ export default function CompanyDetailPage() {
       result = result.filter(g => (runsByGem.get(g.id)?.length ?? 0) > 0);
     }
     switch (gemSort) {
-      case 'name-asc': result.sort((a, b) => a.name.localeCompare(b.name)); break;
-      case 'name-desc': result.sort((a, b) => b.name.localeCompare(a.name)); break;
-      case 'rank': result.sort((a, b) => (a.rank ?? 999) - (b.rank ?? 999)); break;
-      case 'reports-desc': result.sort((a, b) =>
-        (runsByGem.get(b.id)?.length ?? 0) - (runsByGem.get(a.id)?.length ?? 0)
-      ); break;
+      case 'name-asc':
+        result.sort((a, b) => a.name.localeCompare(b.name));
+        break;
+      case 'name-desc':
+        result.sort((a, b) => b.name.localeCompare(a.name));
+        break;
+      case 'rank':
+        result.sort((a, b) => (a.rank ?? 999) - (b.rank ?? 999));
+        break;
+      case 'reports-desc':
+        result.sort(
+          (a, b) => (runsByGem.get(b.id)?.length ?? 0) - (runsByGem.get(a.id)?.length ?? 0),
+        );
+        break;
+      case 'weighted-desc': {
+        result.sort((a, b) => {
+          const sa = gemStatsById.get(a.id)!;
+          const sb = gemStatsById.get(b.id)!;
+          const wa = sa.hasWeighted ? 1 : 0;
+          const wb = sb.hasWeighted ? 1 : 0;
+          if (wa !== wb) return wb - wa;
+          if (sa.maxWeightedNorm !== sb.maxWeightedNorm) return sb.maxWeightedNorm - sa.maxWeightedNorm;
+          return (a.rank ?? 999) - (b.rank ?? 999);
+        });
+        break;
+      }
+      case 'multiple-desc': {
+        result.sort((a, b) => {
+          const sa = gemStatsById.get(a.id)!;
+          const sb = gemStatsById.get(b.id)!;
+          if (sa.distinctScoreTypes !== sb.distinctScoreTypes) {
+            return sb.distinctScoreTypes - sa.distinctScoreTypes;
+          }
+          const ma = sa.hasMultipleScoreTypes ? 1 : 0;
+          const mb = sb.hasMultipleScoreTypes ? 1 : 0;
+          if (ma !== mb) return mb - ma;
+          return a.name.localeCompare(b.name);
+        });
+        break;
+      }
     }
     return result;
-  }, [gems, gemSearch, gemSort, onlyWithRuns, runsByGem]);
+  }, [gems, gemSearch, gemSort, onlyWithRuns, runsByGem, gemStatsById]);
 
   const selectedGem = gems.find(g => g.id === selectedGemId);
   const selectedRuns = selectedGemId ? (runsByGem.get(selectedGemId) ?? []) : [];
@@ -140,13 +254,15 @@ export default function CompanyDetailPage() {
             />
             <select
               value={gemSort}
-              onChange={(e) => setGemSort(e.target.value as GemSort)}
+              onChange={(e) => setGemSortFromUi(e.target.value as GemSort)}
               className="sort-select small"
             >
               <option value="rank">By Rank</option>
               <option value="name-asc">Name A–Z</option>
               <option value="name-desc">Name Z–A</option>
               <option value="reports-desc">Most Reports</option>
+              <option value="weighted-desc">Weighted score (high first)</option>
+              <option value="multiple-desc">Multiple score types</option>
             </select>
             <label className="toggle-label small">
               <input
@@ -169,6 +285,8 @@ export default function CompanyDetailPage() {
                 const count = runsByGem.get(gem.id)?.length ?? 0;
                 const isActive = selectedGemId === gem.id;
                 const categoryName = gem.category_id ? categoryMap.get(gem.category_id) : null;
+                const stats = gemStatsById.get(gem.id)!;
+                const showHighlights = stats.hasWeighted || stats.hasMultipleScoreTypes;
 
                 return (
                   <button
@@ -176,6 +294,22 @@ export default function CompanyDetailPage() {
                     className={`gem-item ${isActive ? 'active' : ''} ${count > 0 ? 'has-runs' : ''}`}
                     onClick={() => handleGemSelect(gem.id)}
                   >
+                    {showHighlights ? (
+                      <div className="gem-item-highlights" aria-hidden>
+                        {stats.hasWeighted ? (
+                          <span
+                            className="gem-highlight gem-highlight--weighted"
+                            title="This gem has at least one weighted score on a report"
+                          />
+                        ) : null}
+                        {stats.hasMultipleScoreTypes ? (
+                          <span
+                            className="gem-highlight gem-highlight--multiple"
+                            title="This gem has multiple score types across reports"
+                          />
+                        ) : null}
+                      </div>
+                    ) : null}
                     <div className="gem-item-main">
                       <span className="gem-name">{gem.name}</span>
                       {gem.description && (

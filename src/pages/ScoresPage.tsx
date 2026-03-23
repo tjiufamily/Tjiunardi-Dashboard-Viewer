@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useScoresData } from '../hooks/useScores';
 import { SCORE_TYPES, SCORE_LABELS } from '../types';
 import type { ScoreType, CompanyScores } from '../types';
@@ -195,7 +195,14 @@ export default function ScoresPage() {
                       Pos Size
                     </button>
                   </td>
-                  <td className="sticky-after-action company-name-cell">{c.companyName}</td>
+                  <td className="sticky-after-action company-name-cell">
+                    <Link
+                      className="scores-company-link"
+                      to={`/company/${c.companyId}?gemSort=weighted-desc`}
+                    >
+                      {c.companyName}
+                    </Link>
+                  </td>
                   <td className="ticker-cell">{c.ticker}</td>
                   {SCORE_TYPES.map(st => (
                     <td key={st} className={scoreCellClass(c.scores[st])}>

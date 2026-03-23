@@ -1,4 +1,4 @@
-import type { SizingResult } from './positionSizing';
+import { type SizingResult, PROBABILITY_SCORE_TYPES } from './positionSizing';
 import type { CompanyScores } from '../types';
 import { SCORE_LABELS } from '../types';
 
@@ -111,6 +111,20 @@ export function buildPositionSizingMarkdown(
     `- **Recommended max position:** ${result.finalPosition === 0 ? '0% (wait / do not invest)' : `${result.finalPosition.toFixed(2)}% of portfolio`}`,
     `- **Base position:** ${result.basePosition.toFixed(2)}%`,
     `- **After CAGR:** ${result.afterCagr.toFixed(2)}%`,
+    `- **Probability:** ×${result.probabilityMultiplier} — ${result.probabilityNote.replace(/\|/g, '/')}`,
+    `- **After probability:** ${result.afterProbability.toFixed(2)}%`,
+    '',
+    '## Probability inputs (5 metrics + avg)',
+    '',
+    '| Metric | Score |',
+    '|--------|------:|',
+    ...PROBABILITY_SCORE_TYPES.map(st => {
+      const d = result.probabilityDetails.find(x => x.scoreType === st);
+      const v = d?.value;
+      return `| ${SCORE_LABELS[st].replace(/\|/g, '/')} | ${v == null ? '—' : v.toFixed(2)} |`;
+    }),
+    '',
+    `- **Average (5):** ${result.probabilityAverage == null ? '—' : result.probabilityAverage.toFixed(2)}`,
     '',
     '## Weighted scores → base',
     '',
@@ -122,18 +136,19 @@ export function buildPositionSizingMarkdown(
     const name = SCORE_LABELS[m.scoreType].replace(/\|/g, '/');
     const rule = m.bracket.replace(/\|/g, '/');
     lines.push(
-      `| ${name} | ${m.score == null ? '—' : m.score.toFixed(1)} | ${m.maxPct.toFixed(1)} | ${rule} |`,
+      `| ${name} | ${m.score == null ? '—' : m.score.toFixed(2)} | ${m.maxPct.toFixed(2)} | ${rule} |`,
     );
   }
 
   lines.push(
     '',
     `- **Average weighted score:** ${result.averageWeightedScore == null ? '—' : result.averageWeightedScore.toFixed(2)}`,
-    `- **Avg > 9 rule applied:** ${result.avgScoreRuleApplied ? 'yes' : 'no'}`,
+    `- **Avg > ${result.avgSuperiorThreshold} rule applied:** ${result.avgScoreRuleApplied ? 'yes' : 'no'}`,
     '',
     '## Stages',
     '',
     `- ${result.cagrNote}`,
+    `- ${result.probabilityNote}`,
     `- ${result.downsideNote}`,
     '',
   );

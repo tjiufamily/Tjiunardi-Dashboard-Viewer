@@ -1,5 +1,5 @@
-import { useState, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useState, useMemo, useEffect } from 'react';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useCompanies, useGems, useGemRuns } from '../hooks/useData';
 
 type CompanySort = 'name-asc' | 'name-desc' | 'reports-desc' | 'latest';
@@ -7,6 +7,7 @@ type CompanySort = 'name-asc' | 'name-desc' | 'reports-desc' | 'latest';
 export default function GemDetailPage() {
   const { gemId } = useParams<{ gemId: string }>();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { companies, loading: companiesLoading } = useCompanies();
   const { gems, loading: gemsLoading } = useGems();
   const { runs, loading: runsLoading } = useGemRuns(gemId ?? '');
@@ -30,6 +31,29 @@ export default function GemDetailPage() {
     }
     return map;
   }, [runs]);
+
+  useEffect(() => {
+    setSelectedCompanyId(null);
+  }, [gemId]);
+
+  useEffect(() => {
+    const c = searchParams.get('company');
+    if (!c) return;
+    if (runsLoading) return;
+    if (runsByCompany.has(c)) {
+      setSelectedCompanyId(c);
+    } else {
+      setSelectedCompanyId(null);
+      setSearchParams(
+        prev => {
+          const next = new URLSearchParams(prev);
+          next.delete('company');
+          return next;
+        },
+        { replace: true },
+      );
+    }
+  }, [gemId, searchParams, runsByCompany, runsLoading, setSearchParams]);
 
   const companyMap = useMemo(() => {
     const map = new Map<string, typeof companies[0]>();
@@ -69,6 +93,14 @@ export default function GemDetailPage() {
   const handleCompanySelect = (cId: string) => {
     setSelectedCompanyId(cId);
     setShowCompanyPanel(false);
+    setSearchParams(
+      prev => {
+        const next = new URLSearchParams(prev);
+        next.set('company', cId);
+        return next;
+      },
+      { replace: true },
+    );
   };
 
   if (loading) {

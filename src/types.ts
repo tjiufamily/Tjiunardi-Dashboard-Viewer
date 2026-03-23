@@ -2,6 +2,8 @@ export interface Company {
   id: string;
   name: string;
   ticker: string;
+  /** Optional Finnhub/Stooq symbol override for quotes (e.g. `SAP.DE`, `BP.L`) when `ticker` alone fails. */
+  quote_ticker?: string | null;
   financial_object_key: string | null;
   financial_original_name: string | null;
   fastgraph_object_key: string | null;
@@ -92,6 +94,7 @@ export type CompanyScores = {
   companyId: string;
   companyName: string;
   ticker: string;
+  quote_ticker?: string | null;
   scores: Partial<Record<ScoreType, number>>;
   rawScores: Partial<Record<ScoreType, number>>;
 };
