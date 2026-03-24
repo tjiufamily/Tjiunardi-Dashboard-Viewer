@@ -1261,7 +1261,14 @@ a.btn { text-decoration: none; color: inherit; }
 .empty-row { text-align: center; color: var(--text-muted); padding: 40px 20px !important; }
 
 /* Metrics compare (gem captured_metrics + weighted scores) */
-.metrics-toolbar { align-items: flex-end; }
+.metrics-toolbar {
+  align-items: flex-end;
+  gap: 14px 18px;
+  background: color-mix(in srgb, var(--bg-surface) 78%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 12px 14px;
+}
 .metrics-quotes-status {
   font-size: 0.78rem;
   color: var(--text-muted);
@@ -1325,12 +1332,31 @@ a.btn { text-decoration: none; color: inherit; }
   flex: 1; min-width: 280px;
 }
 .metrics-gem-label { font-size: 0.85rem; font-weight: 600; color: var(--text-secondary); }
-.metrics-gem-select {
-  min-width: 220px; max-width: min(420px, 100%);
-  padding: 8px 14px; border: 1px solid var(--border); border-radius: var(--radius-md);
-  background: var(--bg-surface); color: var(--text-primary); font-size: 0.85rem;
+.metrics-gem-picker {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 260px;
 }
-.metrics-gem-select:focus { outline: none; border-color: var(--accent); }
+.metrics-gem-checklist {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 6px 12px;
+  max-height: 160px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--bg-surface) 88%, #0b1220 12%);
+}
+.metrics-gem-item {
+  font-size: 0.8rem;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+}
+.metrics-gem-item:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
 .metrics-checkbox {
   display: inline-flex; align-items: center; gap: 8px; font-size: 0.82rem; color: var(--text-secondary);
   cursor: pointer; user-select: none;
@@ -1340,7 +1366,20 @@ a.btn { text-decoration: none; color: inherit; }
   max-width: 120px; white-space: normal; line-height: 1.25; vertical-align: bottom;
   font-size: 0.72rem; font-weight: 600; hyphens: auto;
 }
-.metrics-compare-table .metric-col-inner { display: inline; }
+.metrics-compare-table .metric-col-inner {
+  display: block;
+}
+.metrics-compare-table .metric-col-gem-tag {
+  display: inline-flex;
+  margin-top: 5px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--text-secondary);
+  font-size: 0.64rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
 .metrics-compare-table .metric-cell {
   font-variant-numeric: tabular-nums; font-size: 0.8rem; color: var(--text-primary);
 }

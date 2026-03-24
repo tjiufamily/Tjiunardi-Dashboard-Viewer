@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useSearchParams, useNavigate, Link } from 'react-router-dom';
-import { useCompanies, useGems, useGemRuns, useAllRuns } from '../hooks/useData';
+import { useCompanies, useGems, useAllRuns } from '../hooks/useData';
 import { useScoresData } from '../hooks/useScores';
 import {
   SCORE_TYPES,
@@ -24,6 +24,8 @@ import { loadPriceOverrides, persistPriceOverrides } from '../lib/quoteOverrides
 
 /** Default gem when opening Metrics with no `?gem=` (match by name). */
 const DEFAULT_METRICS_GEM_NAME = 'Value Compounding Analyst V3.3';
+const GEM_PARAM = 'gem';
+const METRIC_COL_ID_SEP = '::';
 
 type SortDir = 'asc' | 'desc';
 type SortKey =
@@ -31,6 +33,8 @@ type SortKey =
   | 'ticker'
   | 'lastPrice'
   | 'impliedCagr'
+  | 'bitsDownsideRisk'
+  | 'bitsToVcaTenYearCagr'
   | 'avg'
   | ScoreType
   | `metric:${string}`;
@@ -71,18 +75,28 @@ type Row = {
   metrics: Record<string, number>;
 };
 
-type EnrichedRow = Row & { lastPrice: number | null; impliedCagr: number | null };
+type EnrichedRow = Row & {
+  lastPrice: number | null;
+  impliedCagr: number | null;
+  bitsDownsideRisk: number | null;
+  bitsToVcaTenYearCagr: number | null;
+};
 
 export default function MetricsComparePage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
-  const gemFromUrl = searchParams.get('gem') ?? '';
+  const gemIdsFromUrl = useMemo(() => {
+    const ids = searchParams.getAll(GEM_PARAM).filter(Boolean);
+    if (ids.length > 0) return ids;
+    const legacySingle = searchParams.get(GEM_PARAM);
+    return legacySingle ? [legacySingle] : [];
+  }, [searchParams]);
 
   const { companies, loading: companiesLoading } = useCompanies();
   const { gems, loading: gemsLoading } = useGems();
   const { runs: allRuns, loading: allRunsLoading } = useAllRuns();
-  const [selectedGemId, setSelectedGemId] = useState('');
-  const [onlyGemsWithMetrics, setOnlyGemsWithMetrics] = useState(true);
+  const [selectedGemIds, setSelectedGemIds] = useState<string[]>([]);
+  const [showWeightedScores, setShowWeightedScores] = useState(true);
   const [search, setSearch] = useState('');
   const [columnMins, setColumnMins] = useState<Record<string, string>>({});
   const [sortKey, setSortKey] = useState<SortKey>('name');
@@ -115,10 +129,9 @@ export default function MetricsComparePage() {
 
   useEffect(() => {
     if (!gems.length) return;
-    if (gemFromUrl) {
-      if (gems.some(g => g.id === gemFromUrl)) {
-        setSelectedGemId(gemFromUrl);
-      }
+    if (gemIdsFromUrl.length > 0) {
+      const valid = gemIdsFromUrl.filter(id => gems.some(g => g.id === id));
+      if (valid.length > 0) setSelectedGemIds(valid);
       defaultMetricsGemAppliedRef.current = true;
       return;
     }
@@ -128,19 +141,19 @@ export default function MetricsComparePage() {
       gems.find(g => (g.name ?? '').includes('Compounding Analyst V3.3')) ??
       gems.find(g => /value\s*:?\s*compounding\s*analyst\s*v3\.?3/i.test(g.name ?? ''));
     if (named) {
-      setSelectedGemId(named.id);
-      setSearchParams({ gem: named.id }, { replace: true });
+      setSelectedGemIds([named.id]);
+      const next = new URLSearchParams();
+      next.append(GEM_PARAM, named.id);
+      setSearchParams(next, { replace: true });
     }
     defaultMetricsGemAppliedRef.current = true;
-  }, [gems, gemFromUrl, setSearchParams]);
+  }, [gems, gemIdsFromUrl, setSearchParams]);
 
   useEffect(() => {
     setColumnMins({});
-  }, [selectedGemId]);
+  }, [selectedGemIds]);
 
-  const { runs, loading: gemRunsLoading } = useGemRuns(selectedGemId);
   const vcaGem = useMemo(() => findValueCompoundingAnalystGem(gems), [gems]);
-  const { runs: vcaRuns, loading: vcaRunsLoading } = useGemRuns(vcaGem?.id ?? '');
   const { companyScores, loading: scoresLoading, scoreColumnDescriptions } = useScoresData();
 
   const scoresByCompany = useMemo(() => {
@@ -159,34 +172,102 @@ export default function MetricsComparePage() {
   }, [allRuns]);
 
   const gemOptions = useMemo(() => {
-    let list = [...gems];
-    if (onlyGemsWithMetrics) {
-      list = list.filter(g => gemIdsWithCapturedMetrics.has(g.id));
-    }
+    let list = gems.filter(g => gemIdsWithCapturedMetrics.has(g.id));
 
-    const selectedGem = gems.find(g => g.id === selectedGemId);
-    const selectedIsInList = selectedGem && list.some(g => g.id === selectedGemId);
-    if (selectedGemId && selectedGem && !selectedIsInList) list = [selectedGem, ...list];
+    const selectedMissing = selectedGemIds
+      .map(id => gems.find(g => g.id === id))
+      .filter((g): g is NonNullable<typeof g> => Boolean(g))
+      .filter(g => !list.some(x => x.id === g.id));
+    if (selectedMissing.length > 0) list = [...selectedMissing, ...list];
 
     return list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-  }, [gems, onlyGemsWithMetrics, gemIdsWithCapturedMetrics, selectedGemId]);
+  }, [gems, gemIdsWithCapturedMetrics, selectedGemIds]);
 
-  const selectedGem = gems.find(g => g.id === selectedGemId);
-
-  const latestByCompany = useMemo(() => latestRunByCompany(runs), [runs]);
-  const metricKeys = useMemo(
-    () => metricStorageKeysForGem(selectedGem, runs),
-    [selectedGem, runs]
+  const selectedGems = useMemo(
+    () => selectedGemIds.map(id => gems.find(g => g.id === id)).filter((g): g is NonNullable<typeof g> => Boolean(g)),
+    [selectedGemIds, gems],
   );
+  const gemShortLabelById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const g of selectedGems) {
+      const name = (g.name ?? '').toLowerCase();
+      if (name.includes('value') && name.includes('compounding') && name.includes('v3.3')) {
+        m.set(g.id, 'VCA v3.3');
+      } else if (name.includes('blood') && name.includes('street')) {
+        m.set(g.id, 'BITS');
+      } else {
+        const short = (g.name ?? g.id)
+          .split(/\s+/)
+          .filter(Boolean)
+          .map(w => w[0]?.toUpperCase() ?? '')
+          .join('')
+          .slice(0, 6);
+        m.set(g.id, short || g.id.slice(0, 6));
+      }
+    }
+    return m;
+  }, [selectedGems]);
+  const primarySelectedGem = selectedGems[0];
+  const selectedGemNames = selectedGems.map(g => g.name || g.id);
+  const selectedGemSet = useMemo(() => new Set(selectedGemIds), [selectedGemIds]);
+
+  const selectedRuns = useMemo(
+    () => allRuns.filter(r => selectedGemSet.has(r.gem_id)),
+    [allRuns, selectedGemSet],
+  );
+  const selectedRunsByGem = useMemo(() => {
+    const m = new Map<string, typeof selectedRuns>();
+    for (const r of selectedRuns) {
+      const prev = m.get(r.gem_id);
+      if (prev) prev.push(r);
+      else m.set(r.gem_id, [r]);
+    }
+    return m;
+  }, [selectedRuns]);
+  const latestByGemCompany = useMemo(() => {
+    const m = new Map<string, Map<string, (typeof selectedRuns)[number]>>();
+    for (const g of selectedGems) {
+      const runsForGem = selectedRunsByGem.get(g.id) ?? [];
+      m.set(g.id, latestRunByCompany(runsForGem));
+    }
+    return m;
+  }, [selectedGems, selectedRunsByGem]);
+  const metricColumns = useMemo(() => {
+    const cols: Array<{ id: string; gemId: string; key: string; label: string }> = [];
+    for (const g of selectedGems) {
+      const runsForGem = selectedRunsByGem.get(g.id) ?? [];
+      const keys = metricStorageKeysForGem(g, runsForGem);
+      for (const key of keys) {
+        cols.push({
+          id: `${g.id}${METRIC_COL_ID_SEP}${key}`,
+          gemId: g.id,
+          key,
+          label: labelForMetricKey(g, key),
+        });
+      }
+    }
+    return cols;
+  }, [selectedGems, selectedRunsByGem]);
 
   const rows: Row[] = useMemo(() => {
     const companyMap = new Map(companies.map(c => [c.id, c]));
+    const companyIds = new Set<string>();
+    for (const byCompany of latestByGemCompany.values()) {
+      for (const companyId of byCompany.keys()) companyIds.add(companyId);
+    }
     const out: Row[] = [];
-    for (const [companyId, run] of latestByCompany) {
+    for (const companyId of companyIds) {
       const co = companyMap.get(companyId);
       if (!co) continue;
       const cs = scoresByCompany.get(companyId);
-      const metrics = { ...(run.captured_metrics ?? {}) };
+      const metrics: Record<string, number> = {};
+      for (const col of metricColumns) {
+        const run = latestByGemCompany.get(col.gemId)?.get(companyId);
+        const v = run?.captured_metrics?.[col.key];
+        if (typeof v === 'number' && !Number.isNaN(v)) {
+          metrics[col.id] = v;
+        }
+      }
       const qt = (co.quote_ticker ?? '').trim();
       const quoteSymbol = qt || co.ticker;
       out.push({
@@ -200,7 +281,7 @@ export default function MetricsComparePage() {
       });
     }
     return out;
-  }, [latestByCompany, companies, scoresByCompany]);
+  }, [latestByGemCompany, companies, scoresByCompany, metricColumns]);
 
   const rowTickerInfos = useMemo(
     () => rows.map(r => ({ ticker: r.quoteSymbol, name: r.companyName })),
@@ -208,12 +289,49 @@ export default function MetricsComparePage() {
   );
   const { quotes, loading: quotesLoading, error: quotesError, fetchProgress } = useStockQuotes(rowTickerInfos);
 
+  const vcaRuns = useMemo(
+    () => (vcaGem ? allRuns.filter(r => r.gem_id === vcaGem.id) : []),
+    [allRuns, vcaGem],
+  );
   const latestVcaByCompany = useMemo(() => latestRunByCompany(vcaRuns), [vcaRuns]);
   const vcaTargetKey = useMemo(() => {
     if (!vcaGem) return undefined;
     const keys = metricStorageKeysForGem(vcaGem, vcaRuns);
     return tenYearTargetPriceMetricKey(vcaGem, keys);
   }, [vcaGem, vcaRuns]);
+  const bitsGem = useMemo(
+    () =>
+      selectedGems.find(g =>
+        /(blood\s+in\s+the\s+streets?|bits\s+by\s+asymmetric\s+alpha\s+analyst|asymmetric\s+alpha\s+analyst)/i.test(
+          g.name ?? '',
+        ),
+      ),
+    [selectedGems],
+  );
+  const bitsRuns = useMemo(
+    () => (bitsGem ? allRuns.filter(r => r.gem_id === bitsGem.id) : []),
+    [allRuns, bitsGem],
+  );
+  const latestBitsByCompany = useMemo(() => latestRunByCompany(bitsRuns), [bitsRuns]);
+  const bitsTargetKey = useMemo(() => {
+    if (!bitsGem) return undefined;
+    const keys = metricStorageKeysForGem(bitsGem, bitsRuns);
+    const scored = keys
+      .map(k => {
+        const L = labelForMetricKey(bitsGem, k).toLowerCase();
+        let score = 0;
+        if (L.includes('target')) score += 3;
+        if (L.includes('price')) score += 2;
+        if (/target[_\s-]*price|price[_\s-]*target/.test(k.toLowerCase())) score += 2;
+        if (L.includes('10') || L.includes('ten')) score -= 2;
+        return { k, score };
+      })
+      .filter(x => x.score > 0)
+      .sort((a, b) => b.score - a.score);
+    return scored[0]?.k;
+  }, [bitsGem, bitsRuns]);
+  const showBitsDerived = Boolean(bitsGem);
+  const vcaRunsLoading = allRunsLoading || gemsLoading;
 
   const enrichedRows: EnrichedRow[] = useMemo(() => {
     return rows.map(r => {
@@ -229,9 +347,28 @@ export default function MetricsComparePage() {
         lastPrice != null && typeof target === 'number' && target > 0
           ? impliedCagrPercentFromPrices(lastPrice, target)
           : null;
-      return { ...r, lastPrice, impliedCagr };
+      const bitsRun = latestBitsByCompany.get(r.companyId);
+      const bitsTarget =
+        bitsTargetKey != null && bitsRun?.captured_metrics
+          ? bitsRun.captured_metrics[bitsTargetKey]
+          : undefined;
+      const bitsDownsideRisk =
+        lastPrice != null &&
+        lastPrice > 0 &&
+        typeof bitsTarget === 'number' &&
+        bitsTarget > 0
+          ? (1 - bitsTarget / lastPrice) * 100
+          : null;
+      const bitsToVcaTenYearCagr =
+        typeof bitsTarget === 'number' &&
+        bitsTarget > 0 &&
+        typeof target === 'number' &&
+        target > 0
+          ? impliedCagrPercentFromPrices(bitsTarget, target)
+          : null;
+      return { ...r, lastPrice, impliedCagr, bitsDownsideRisk, bitsToVcaTenYearCagr };
     });
-  }, [rows, quotes, priceOverrides, vcaTargetKey, latestVcaByCompany]);
+  }, [rows, quotes, priceOverrides, vcaTargetKey, latestVcaByCompany, latestBitsByCompany, bitsTargetKey]);
 
   const displayedPriceCount = useMemo(
     () => enrichedRows.filter(r => r.lastPrice != null && r.lastPrice > 0).length,
@@ -247,15 +384,19 @@ export default function MetricsComparePage() {
         params.set('cagrSrc', 'implied');
         return `/position-sizing?${params.toString()}`;
       }
-      const pk = primaryCagrMetricStorageKey(selectedGem, metricKeys);
-      const raw = pk != null ? r.metrics[pk] : undefined;
+      const primaryGemRuns = primarySelectedGem ? selectedRunsByGem.get(primarySelectedGem.id) ?? [] : [];
+      const primaryKeys = metricStorageKeysForGem(primarySelectedGem, primaryGemRuns);
+      const pk = primaryCagrMetricStorageKey(primarySelectedGem, primaryKeys);
+      const columnId =
+        pk != null && primarySelectedGem ? `${primarySelectedGem.id}${METRIC_COL_ID_SEP}${pk}` : undefined;
+      const raw = columnId ? r.metrics[columnId] : undefined;
       if (raw != null && typeof raw === 'number' && !Number.isNaN(raw)) {
         params.set('cagr', String(raw));
         params.set('cagrSrc', 'base_case');
       }
       return `/position-sizing?${params.toString()}`;
     },
-    [selectedGem, metricKeys],
+    [primarySelectedGem, selectedRunsByGem],
   );
 
   const toggleSort = (key: SortKey) => {
@@ -281,7 +422,7 @@ export default function MetricsComparePage() {
           columnMins,
           st => r.scores[st],
           k => r.metrics[k],
-          metricKeys,
+          metricColumns.map(c => c.id),
           () => avgOfScores(r.scores),
         )
       ) {
@@ -294,6 +435,14 @@ export default function MetricsComparePage() {
       const minI = parseMinInput(columnMins['extra:impliedCagr'] ?? '');
       if (minI != null) {
         if (r.impliedCagr == null || r.impliedCagr < minI) return false;
+      }
+      const minBitsDownside = parseMinInput(columnMins['extra:bitsDownsideRisk'] ?? '');
+      if (minBitsDownside != null) {
+        if (r.bitsDownsideRisk == null || r.bitsDownsideRisk < minBitsDownside) return false;
+      }
+      const minBitsToVca = parseMinInput(columnMins['extra:bitsToVcaTenYearCagr'] ?? '');
+      if (minBitsToVca != null) {
+        if (r.bitsToVcaTenYearCagr == null || r.bitsToVcaTenYearCagr < minBitsToVca) return false;
       }
       return true;
     });
@@ -311,6 +460,8 @@ export default function MetricsComparePage() {
       if (sortKey === 'ticker') return a.ticker.localeCompare(b.ticker) * dir;
       if (sortKey === 'lastPrice') return nullLast(a.lastPrice, b.lastPrice);
       if (sortKey === 'impliedCagr') return nullLast(a.impliedCagr, b.impliedCagr);
+      if (sortKey === 'bitsDownsideRisk') return nullLast(a.bitsDownsideRisk, b.bitsDownsideRisk);
+      if (sortKey === 'bitsToVcaTenYearCagr') return nullLast(a.bitsToVcaTenYearCagr, b.bitsToVcaTenYearCagr);
       if (sortKey === 'avg') return nullLast(avgOfScores(a.scores), avgOfScores(b.scores));
       if (SCORE_TYPES.includes(sortKey as ScoreType)) {
         const st = sortKey as ScoreType;
@@ -324,26 +475,35 @@ export default function MetricsComparePage() {
     });
 
     return list;
-  }, [enrichedRows, search, columnMins, metricKeys, sortKey, sortDir]);
+  }, [enrichedRows, search, columnMins, metricColumns, sortKey, sortDir]);
 
   const arrow = (key: SortKey) => (sortKey === key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
 
-  const onGemChange = (id: string) => {
-    setSelectedGemId(id);
-    if (id) {
-      setSearchParams({ gem: id }, { replace: true });
+  const onGemChange = (ids: string[]) => {
+    setSelectedGemIds(ids);
+    if (ids.length > 0) {
+      const next = new URLSearchParams();
+      for (const id of ids) next.append(GEM_PARAM, id);
+      setSearchParams(next, { replace: true });
     } else {
       setSearchParams({}, { replace: true });
     }
   };
+  const onGemToggle = (id: string, checked: boolean) => {
+    const next = checked
+      ? Array.from(new Set([...selectedGemIds, id]))
+      : selectedGemIds.filter(x => x !== id);
+    onGemChange(next);
+  };
 
   const loading =
-    companiesLoading || gemsLoading || allRunsLoading || scoresLoading ||
-    (Boolean(selectedGemId) && gemRunsLoading);
+    companiesLoading || gemsLoading || allRunsLoading || scoresLoading;
 
-  const tableColSpan = 6 + metricKeys.length + SCORE_TYPES.length;
+  const scoreColumnCount = showWeightedScores ? SCORE_TYPES.length + 1 : 0;
+  const bitsDerivedColCount = showBitsDerived ? 2 : 0;
+  const tableColSpan = 5 + bitsDerivedColCount + metricColumns.length + scoreColumnCount;
 
-  if (loading && !selectedGemId) {
+  if (loading && selectedGemIds.length === 0) {
     return (
       <div className="page-loading">
         <div className="spinner" />
@@ -358,37 +518,42 @@ export default function MetricsComparePage() {
         <h2>Gem metrics &amp; scores</h2>
         <p className="scores-subtitle">
           Latest captured metrics and weighted scores (latest per score type).{' '}
-          {selectedGemId ? (
+          {selectedGemIds.length > 0 ? (
             <span className="scores-subtitle-count">{filteredSorted.length} companies</span>
           ) : (
-            'Pick a gem to begin.'
+            'Pick one or more gems to begin.'
           )}
         </p>
       </div>
 
       <div className="scores-toolbar metrics-toolbar">
         <div className="metrics-gem-row">
-          <label className="metrics-gem-label" htmlFor="metrics-gem-select">Gem</label>
-          <select
-            id="metrics-gem-select"
-            className="metrics-gem-select"
-            value={selectedGemId}
-            onChange={e => onGemChange(e.target.value)}
-          >
-            <option value="">Select a gem…</option>
-            {gemOptions.map(g => (
-              <option key={g.id} value={g.id}>
-                {g.name}
-              </option>
-            ))}
-          </select>
+          <div className="metrics-gem-picker">
+            <span className="metrics-gem-label">Gems</span>
+            <div className="metrics-gem-checklist" role="group" aria-label="Select gems">
+              {gemOptions.map(g => (
+                <label
+                  key={g.id}
+                  className="metrics-checkbox metrics-gem-item"
+                  title={g.description?.trim() || g.name || 'No gem description available.'}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedGemIds.includes(g.id)}
+                    onChange={e => onGemToggle(g.id, e.target.checked)}
+                  />
+                  {g.name}
+                </label>
+              ))}
+            </div>
+          </div>
           <label className="metrics-checkbox">
             <input
               type="checkbox"
-              checked={onlyGemsWithMetrics}
-              onChange={e => setOnlyGemsWithMetrics(e.target.checked)}
+              checked={showWeightedScores}
+              onChange={e => setShowWeightedScores(e.target.checked)}
             />
-            Only gems with captured metrics
+            Show Single Weighted Score columns
           </label>
         </div>
         <div className="search-box">
@@ -398,18 +563,18 @@ export default function MetricsComparePage() {
             value={search}
             onChange={e => setSearch(e.target.value)}
             className="scores-search"
-            disabled={!selectedGemId}
+            disabled={selectedGemIds.length === 0}
           />
         </div>
         <button
           type="button"
           className="btn btn-ghost btn-sm scores-reset-filters"
           onClick={resetFilters}
-          disabled={!selectedGemId}
+          disabled={selectedGemIds.length === 0}
         >
           Reset filters
         </button>
-        {selectedGemId && rows.length > 0 ? (
+        {selectedGemIds.length > 0 && rows.length > 0 ? (
           <span
             className={`metrics-quotes-status metrics-quotes-status--row${quotesError && !quotesLoading ? ' metrics-quotes-status--error' : ''}`}
             aria-live="polite"
@@ -438,24 +603,24 @@ export default function MetricsComparePage() {
         ) : null}
       </div>
 
-      {selectedGemId && loading ? (
+      {selectedGemIds.length > 0 && loading ? (
         <div className="page-loading">
           <div className="spinner" />
           <p>Loading runs…</p>
         </div>
-      ) : !selectedGemId ? (
+      ) : selectedGemIds.length === 0 ? (
         <div className="empty-state light">
-          <h3>Select a gem</h3>
-          <p>Choose a gem above to compare companies by captured metrics and weighted scores.</p>
+          <h3>Select one or more gems</h3>
+          <p>Choose gems above to compare companies by captured metrics and weighted scores.</p>
         </div>
-      ) : runs.length === 0 ? (
+      ) : selectedRuns.length === 0 ? (
         <div className="empty-state light">
-          <h3>No runs for this gem</h3>
-          <p>There are no gem runs for <strong>{selectedGem?.name}</strong> yet.</p>
+          <h3>No runs for selected gems</h3>
+          <p>There are no gem runs for <strong>{selectedGemNames.join(', ')}</strong> yet.</p>
         </div>
       ) : (
         <>
-          {metricKeys.length === 0 && (
+          {metricColumns.length === 0 && (
             <p className="metrics-no-keys-hint">
               No metric keys found in capture config or runs. Weighted scores still show when available.
             </p>
@@ -483,29 +648,53 @@ export default function MetricsComparePage() {
                   >
                     Exp. 10Y CAGR (price→target){arrow('impliedCagr')}
                   </th>
-                  {metricKeys.map(k => (
+                  {showBitsDerived && (
                     <th
-                      key={k}
+                      className="metric-col metrics-th-tip"
+                      data-tip="Downside Risk = 1 - (Blood in the Streets target price / last price)."
+                      onClick={() => toggleSort('bitsDownsideRisk')}
+                    >
+                      BITS Downside Risk %{arrow('bitsDownsideRisk')}
+                    </th>
+                  )}
+                  {showBitsDerived && (
+                    <th
+                      className="metric-col metrics-th-tip"
+                      data-tip="10Y CAGR from Blood in the Streets target price to Value Compounding Analyst V3.3 10Y target price."
+                      onClick={() => toggleSort('bitsToVcaTenYearCagr')}
+                    >
+                      BITS→VCA 10Y CAGR %{arrow('bitsToVcaTenYearCagr')}
+                    </th>
+                  )}
+                  {metricColumns.map(col => (
+                    <th
+                      key={col.id}
                       className="metric-col"
-                      title={labelForMetricKey(selectedGem, k)}
-                      onClick={() => toggleSort(`metric:${k}` as SortKey)}
+                      title={`${selectedGems.find(g => g.id === col.gemId)?.name ?? col.gemId}: ${col.label}`}
+                      onClick={() => toggleSort(`metric:${col.id}` as SortKey)}
                     >
-                      <span className="metric-col-inner">{labelForMetricKey(selectedGem, k)}</span>
-                      {arrow(`metric:${k}` as SortKey)}
+                      <span className="metric-col-inner">
+                        {col.label}
+                      </span>
+                      {selectedGemIds.length > 1 && (
+                        <span className="metric-col-gem-tag">{gemShortLabelById.get(col.gemId) ?? col.gemId}</span>
+                      )}
+                      {arrow(`metric:${col.id}` as SortKey)}
                     </th>
                   ))}
-                  {SCORE_TYPES.map(st => (
-                    <th
-                      key={st}
-                      className="score-type-heading"
-                      title={scoreColumnDescriptions[st]}
-                      onClick={() => toggleSort(st)}
-                    >
-                      {SCORE_LABELS[st]}
-                      {arrow(st)}
-                    </th>
-                  ))}
-                  <th onClick={() => toggleSort('avg')}>Avg{arrow('avg')}</th>
+                  {showWeightedScores &&
+                    SCORE_TYPES.map(st => (
+                      <th
+                        key={st}
+                        className="score-type-heading"
+                        title={scoreColumnDescriptions[st]}
+                        onClick={() => toggleSort(st)}
+                      >
+                        {SCORE_LABELS[st]}
+                        {arrow(st)}
+                      </th>
+                    ))}
+                  {showWeightedScores && <th onClick={() => toggleSort('avg')}>Avg{arrow('avg')}</th>}
                 </tr>
                 <tr className="scores-min-filter-row">
                   <th className="sticky-action filter-header-cell" aria-hidden />
@@ -539,26 +728,77 @@ export default function MetricsComparePage() {
                       />
                     </label>
                   </th>
-                  {metricKeys.map(k => (
-                    <th key={k} className="filter-header-cell">
+                  {showBitsDerived && (
+                    <th className="filter-header-cell">
                       <label className="column-min-label">
-                        <span className="visually-hidden">Min {labelForMetricKey(selectedGem, k)}</span>
+                        <span className="visually-hidden">Min BITS downside risk</span>
                         <input
                           type="number"
                           step="any"
                           className="column-min-input"
                           placeholder="Min"
-                          value={columnMins[`metric:${k}`] ?? ''}
-                          onChange={e => setMin(`metric:${k}`, e.target.value)}
+                          value={columnMins['extra:bitsDownsideRisk'] ?? ''}
+                          onChange={e => setMin('extra:bitsDownsideRisk', e.target.value)}
+                          onClick={e => e.stopPropagation()}
+                        />
+                      </label>
+                    </th>
+                  )}
+                  {showBitsDerived && (
+                    <th className="filter-header-cell">
+                      <label className="column-min-label">
+                        <span className="visually-hidden">Min BITS to VCA 10Y CAGR</span>
+                        <input
+                          type="number"
+                          step="any"
+                          className="column-min-input"
+                          placeholder="Min"
+                          value={columnMins['extra:bitsToVcaTenYearCagr'] ?? ''}
+                          onChange={e => setMin('extra:bitsToVcaTenYearCagr', e.target.value)}
+                          onClick={e => e.stopPropagation()}
+                        />
+                      </label>
+                    </th>
+                  )}
+                  {metricColumns.map(col => (
+                    <th key={col.id} className="filter-header-cell">
+                      <label className="column-min-label">
+                        <span className="visually-hidden">Min {col.label}</span>
+                        <input
+                          type="number"
+                          step="any"
+                          className="column-min-input"
+                          placeholder="Min"
+                          value={columnMins[`metric:${col.id}`] ?? ''}
+                          onChange={e => setMin(`metric:${col.id}`, e.target.value)}
                           onClick={e => e.stopPropagation()}
                         />
                       </label>
                     </th>
                   ))}
-                  {SCORE_TYPES.map(st => (
-                    <th key={st} className="filter-header-cell">
+                  {showWeightedScores &&
+                    SCORE_TYPES.map(st => (
+                      <th key={st} className="filter-header-cell">
+                        <label className="column-min-label">
+                          <span className="visually-hidden">Min {SCORE_LABELS[st]}</span>
+                          <input
+                            type="number"
+                            step="0.1"
+                            min="0"
+                            max="10"
+                            className="column-min-input"
+                            placeholder="Min"
+                            value={columnMins[`score:${st}`] ?? ''}
+                            onChange={e => setMin(`score:${st}`, e.target.value)}
+                            onClick={e => e.stopPropagation()}
+                          />
+                        </label>
+                      </th>
+                    ))}
+                  {showWeightedScores && (
+                    <th className="filter-header-cell">
                       <label className="column-min-label">
-                        <span className="visually-hidden">Min {SCORE_LABELS[st]}</span>
+                        <span className="visually-hidden">Min average</span>
                         <input
                           type="number"
                           step="0.1"
@@ -566,29 +806,13 @@ export default function MetricsComparePage() {
                           max="10"
                           className="column-min-input"
                           placeholder="Min"
-                          value={columnMins[`score:${st}`] ?? ''}
-                          onChange={e => setMin(`score:${st}`, e.target.value)}
+                          value={columnMins.avg ?? ''}
+                          onChange={e => setMin('avg', e.target.value)}
                           onClick={e => e.stopPropagation()}
                         />
                       </label>
                     </th>
-                  ))}
-                  <th className="filter-header-cell">
-                    <label className="column-min-label">
-                      <span className="visually-hidden">Min average</span>
-                      <input
-                        type="number"
-                        step="0.1"
-                        min="0"
-                        max="10"
-                        className="column-min-input"
-                        placeholder="Min"
-                        value={columnMins.avg ?? ''}
-                        onChange={e => setMin('avg', e.target.value)}
-                        onClick={e => e.stopPropagation()}
-                      />
-                    </label>
-                  </th>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -613,7 +837,7 @@ export default function MetricsComparePage() {
                       <td className="sticky-after-action company-name-cell">
                         <Link
                           className="scores-company-link"
-                          to={`/gem/${selectedGemId}?company=${encodeURIComponent(r.companyId)}`}
+                          to={`/gem/${primarySelectedGem?.id ?? selectedGemIds[0]}?company=${encodeURIComponent(r.companyId)}`}
                         >
                           {r.companyName}
                         </Link>
@@ -665,19 +889,28 @@ export default function MetricsComparePage() {
                           vcaRunsLoading,
                         )}
                       </td>
-                      {metricKeys.map(k => (
-                        <td key={k} className="metric-cell">
-                          {fmtMetric(r.metrics[k])}
+                      {showBitsDerived && (
+                        <td className="metric-cell">{fmtImpliedCagrCell(r.bitsDownsideRisk, false, false)}</td>
+                      )}
+                      {showBitsDerived && (
+                        <td className="metric-cell">{fmtImpliedCagrCell(r.bitsToVcaTenYearCagr, false, false)}</td>
+                      )}
+                      {metricColumns.map(col => (
+                        <td key={col.id} className="metric-cell">
+                          {fmtMetric(r.metrics[col.id])}
                         </td>
                       ))}
-                      {SCORE_TYPES.map(st => (
-                        <td key={st} className={scoreCellClass(r.scores[st])}>
-                          {fmtScore(r.scores[st])}
+                      {showWeightedScores &&
+                        SCORE_TYPES.map(st => (
+                          <td key={st} className={scoreCellClass(r.scores[st])}>
+                            {fmtScore(r.scores[st])}
+                          </td>
+                        ))}
+                      {showWeightedScores && (
+                        <td className={scoreCellClass(avgOfScores(r.scores) ?? undefined)}>
+                          {fmtScore(avgOfScores(r.scores))}
                         </td>
-                      ))}
-                      <td className={scoreCellClass(avgOfScores(r.scores) ?? undefined)}>
-                        {fmtScore(avgOfScores(r.scores))}
-                      </td>
+                      )}
                     </tr>
                   ))
                 )}

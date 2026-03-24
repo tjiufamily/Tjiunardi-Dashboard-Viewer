@@ -1,5 +1,86 @@
 import type { Gem, GemRun } from '../types';
 
+function metricTokens(v: string): string[] {
+  return v
+    .toLowerCase()
+    .split(/[^a-z0-9]+/g)
+    .filter(Boolean);
+}
+
+function metricIdentity(v: string): string {
+  return metricTokens(v).join('');
+}
+
+function metricAcronym(tokens: string[]): string {
+  const stop = new Set(['a', 'an', 'and', 'for', 'in', 'of', 'on', 'the', 'to', 'with']);
+  return tokens.filter(t => !stop.has(t)).map(t => t[0]).join('');
+}
+
+function sharedSuffixTokenCount(a: string[], b: string[]): number {
+  let i = a.length - 1;
+  let j = b.length - 1;
+  let n = 0;
+  while (i >= 0 && j >= 0 && a[i] === b[j]) {
+    n += 1;
+    i -= 1;
+    j -= 1;
+  }
+  return n;
+}
+
+function areMetricAliases(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (
+    (a === 'bits_target_price' && b === 'bigs_target_price') ||
+    (a === 'bigs_target_price' && b === 'bits_target_price')
+  ) {
+    return true;
+  }
+
+  const at = metricTokens(a);
+  const bt = metricTokens(b);
+  const suffix = sharedSuffixTokenCount(at, bt);
+  // Heuristic: same 2+ trailing semantic tokens, and one side's prefix is an acronym of the other.
+  if (suffix >= 2) {
+    const ap = at.slice(0, at.length - suffix);
+    const bp = bt.slice(0, bt.length - suffix);
+    if (ap.length > 1 && bp.length === 1 && metricAcronym(ap) === bp[0]) return true;
+    if (bp.length > 1 && ap.length === 1 && metricAcronym(bp) === ap[0]) return true;
+  }
+  return false;
+}
+
+function findRunAliasForConfiguredKey(configKey: string, runKeys: Set<string>): string | undefined {
+  const configIdentity = metricIdentity(configKey);
+  for (const rk of runKeys) {
+    if (rk === configKey) return rk;
+    if (metricIdentity(rk) === configIdentity) return rk;
+    if (areMetricAliases(configKey, rk)) return rk;
+  }
+  return undefined;
+}
+
+function normalizeMetricStorageKeyAliasForRuns(key: string, runKeys: Set<string>): string {
+  // Historical typo compatibility: use the key variant that actually exists in runs.
+  if (key === 'bigs_target_price' && runKeys.has('bits_target_price') && !runKeys.has('bigs_target_price')) {
+    return 'bits_target_price';
+  }
+  if (key === 'bits_target_price' && runKeys.has('bigs_target_price') && !runKeys.has('bits_target_price')) {
+    return 'bigs_target_price';
+  }
+  const mapped = findRunAliasForConfiguredKey(key, runKeys);
+  if (mapped) return mapped;
+  return key;
+}
+
+function isDuplicateMetricAlias(existing: Set<string>, candidate: string): boolean {
+  if (existing.has(candidate)) return true;
+  for (const k of existing) {
+    if (areMetricAliases(k, candidate)) return true;
+  }
+  return false;
+}
+
 /** Runs must be ordered newest-first (e.g. gem_runs ordered by created_at desc). */
 export function latestRunByCompany(runs: GemRun[]): Map<string, GemRun> {
   const map = new Map<string, GemRun>();
@@ -11,15 +92,31 @@ export function latestRunByCompany(runs: GemRun[]): Map<string, GemRun> {
 
 export function metricStorageKeysForGem(gem: Gem | undefined, runs: GemRun[]): string[] {
   const multiTags = gem?.capture_config?.multiTags ?? [];
-  const ordered = multiTags.map(t => t.storageKey).filter((k): k is string => Boolean(k));
-  const seen = new Set(ordered);
-  const extra = new Set<string>();
+  const runKeys = new Set<string>();
   for (const r of runs) {
     const m = r.captured_metrics;
     if (!m) continue;
-    for (const k of Object.keys(m)) {
-      if (!seen.has(k)) extra.add(k);
-    }
+    for (const k of Object.keys(m)) runKeys.add(k);
+  }
+
+  const orderedRaw = multiTags
+    .map(t => t.storageKey)
+    .filter((k): k is string => Boolean(k))
+    .map(k => normalizeMetricStorageKeyAliasForRuns(k, runKeys));
+  const ordered: string[] = [];
+  const orderedSeen = new Set<string>();
+  for (const k of orderedRaw) {
+    if (isDuplicateMetricAlias(orderedSeen, k)) continue;
+    ordered.push(k);
+    orderedSeen.add(k);
+  }
+
+  const seen = new Set(ordered);
+  const extra = new Set<string>();
+  for (const k of runKeys) {
+    if (isDuplicateMetricAlias(seen, k)) continue;
+    extra.add(k);
+    seen.add(k);
   }
   return [...ordered, ...[...extra].sort()];
 }
@@ -28,6 +125,16 @@ export function labelForMetricKey(gem: Gem | undefined, key: string): string {
   const multiTags = gem?.capture_config?.multiTags ?? [];
   const tag = multiTags.find(t => t.storageKey === key);
   if (tag?.label) return tag.label;
+
+  const aliasTag = multiTags.find(t => {
+    if (!t.storageKey) return false;
+    if (areMetricAliases(t.storageKey, key)) return true;
+    return metricIdentity(t.storageKey) === metricIdentity(key);
+  });
+  if (aliasTag?.label) {
+    return aliasTag.label;
+  }
+
   return key;
 }
 
