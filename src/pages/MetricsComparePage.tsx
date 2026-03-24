@@ -646,7 +646,7 @@ export default function MetricsComparePage() {
                     data-tip="Implied CAGR from last price to the 10 Yr target price captured by Value Compounding Analyst V3.3."
                     onClick={() => toggleSort('impliedCagr')}
                   >
-                    Exp. 10Y CAGR (price→target){arrow('impliedCagr')}
+                    Implied 10Y CAGR % (VCA){arrow('impliedCagr')}
                   </th>
                   {showBitsDerived && (
                     <th
@@ -654,7 +654,7 @@ export default function MetricsComparePage() {
                       data-tip="Downside Risk = 1 - (Blood in the Streets target price / last price)."
                       onClick={() => toggleSort('bitsDownsideRisk')}
                     >
-                      BITS Downside Risk %{arrow('bitsDownsideRisk')}
+                      Downside Risk % (BITS){arrow('bitsDownsideRisk')}
                     </th>
                   )}
                   {showBitsDerived && (
@@ -663,7 +663,7 @@ export default function MetricsComparePage() {
                       data-tip="10Y CAGR from Blood in the Streets target price to Value Compounding Analyst V3.3 10Y target price."
                       onClick={() => toggleSort('bitsToVcaTenYearCagr')}
                     >
-                      BITS→VCA 10Y CAGR %{arrow('bitsToVcaTenYearCagr')}
+                      10Y CAGR % (BITS→VCA){arrow('bitsToVcaTenYearCagr')}
                     </th>
                   )}
                   {metricColumns.map(col => (
@@ -716,7 +716,7 @@ export default function MetricsComparePage() {
                   </th>
                   <th className="filter-header-cell">
                     <label className="column-min-label">
-                      <span className="visually-hidden">Min expected 10Y CAGR</span>
+                        <span className="visually-hidden">Min implied 10Y CAGR from VCA</span>
                       <input
                         type="number"
                         step="any"
@@ -731,7 +731,7 @@ export default function MetricsComparePage() {
                   {showBitsDerived && (
                     <th className="filter-header-cell">
                       <label className="column-min-label">
-                        <span className="visually-hidden">Min BITS downside risk</span>
+                        <span className="visually-hidden">Min downside risk from BITS</span>
                         <input
                           type="number"
                           step="any"
@@ -747,7 +747,7 @@ export default function MetricsComparePage() {
                   {showBitsDerived && (
                     <th className="filter-header-cell">
                       <label className="column-min-label">
-                        <span className="visually-hidden">Min BITS to VCA 10Y CAGR</span>
+                        <span className="visually-hidden">Min 10Y CAGR from BITS to VCA</span>
                         <input
                           type="number"
                           step="any"

@@ -30,6 +30,9 @@ import type {
 import {
   findValueCompoundingAnalystGem,
   latestRunForGem,
+  metricStorageKeysForGem,
+  labelForMetricKey,
+  impliedCagrPercentFromPrices,
   valueCompoundingCagrOptionsFromRun,
   type CagrSource,
 } from '../lib/gemMetrics';
@@ -106,12 +109,44 @@ export default function PositionSizingPage() {
     if (!vcaGem || !selectedCompanyId) return undefined;
     return latestRunForGem(companyRuns, vcaGem.id);
   }, [vcaGem, companyRuns, selectedCompanyId]);
+  const bitsGem = useMemo(
+    () =>
+      gems.find(g =>
+        /(blood\s+in\s+the\s+streets?|bits\s+by\s+asymmetric\s+alpha\s+analyst|asymmetric\s+alpha\s+analyst)/i.test(
+          g.name ?? '',
+        ),
+      ),
+    [gems],
+  );
+  const latestBitsRun = useMemo(() => {
+    if (!bitsGem || !selectedCompanyId) return undefined;
+    return latestRunForGem(companyRuns, bitsGem.id);
+  }, [bitsGem, companyRuns, selectedCompanyId]);
 
   const vcaOpts = useMemo(() => {
     const px = quoteSymbol ? quotes.get(normalizeTickerSymbol(quoteSymbol)) : undefined;
     return valueCompoundingCagrOptionsFromRun(vcaGem, latestVcaRun, px ?? null);
   }, [vcaGem, latestVcaRun, quotes, quoteSymbol]);
-
+  const bitsTargetPrice = useMemo(() => {
+    if (!bitsGem || !latestBitsRun?.captured_metrics) return null;
+    const keys = metricStorageKeysForGem(bitsGem, [latestBitsRun]);
+    const scored = keys
+      .map(k => {
+        const L = labelForMetricKey(bitsGem, k).toLowerCase();
+        let score = 0;
+        if (L.includes('target')) score += 3;
+        if (L.includes('price')) score += 2;
+        if (/target[_\s-]*price|price[_\s-]*target/.test(k.toLowerCase())) score += 2;
+        if (L.includes('10') || L.includes('ten')) score -= 2;
+        return { k, score };
+      })
+      .filter(x => x.score > 0)
+      .sort((a, b) => b.score - a.score);
+    const key = scored[0]?.k;
+    if (!key) return null;
+    const v = latestBitsRun.captured_metrics[key];
+    return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null;
+  }, [bitsGem, latestBitsRun]);
   const delayedPrice = useMemo(() => {
     if (!quoteSymbol) return null;
     return quotes.get(normalizeTickerSymbol(quoteSymbol)) ?? null;
@@ -172,6 +207,18 @@ export default function PositionSizingPage() {
   const [downside, setDownside] = useState<string>('');
   const [downsidePrice, setDownsidePrice] = useState<string>('');
   const [showRules, setShowRules] = useState(false);
+  const downsideToVcaTenYearCagr = useMemo(() => {
+    const entry = parseFloat(downsidePrice);
+    const target = vcaOpts.tenYearTargetPrice;
+    if (!Number.isFinite(entry) || entry <= 0 || target == null || target <= 0) return null;
+    return impliedCagrPercentFromPrices(entry, target, 10);
+  }, [downsidePrice, vcaOpts.tenYearTargetPrice]);
+  const downsideToTargetExpectedReturn = useMemo(() => {
+    const entry = parseFloat(downsidePrice);
+    const target = vcaOpts.tenYearTargetPrice;
+    if (!Number.isFinite(entry) || entry <= 0 || target == null || target <= 0) return null;
+    return ((target / entry) - 1) * 100;
+  }, [downsidePrice, vcaOpts.tenYearTargetPrice]);
 
   const [scoreBrackets, setScoreBrackets] = useState<ScoreThreshold[]>(() => [...DEFAULT_SCORE_BRACKETS]);
   const [floorScore, setFloorScore] = useState(DEFAULT_FLOOR_SCORE);
@@ -341,6 +388,8 @@ export default function PositionSizingPage() {
     setSelectedCompanyId(id);
     setCagr('');
     setCagrSource('implied');
+    setDownside('');
+    setDownsidePrice('');
     setSearchParams(id ? { company: id } : {});
   };
 
@@ -382,6 +431,12 @@ export default function PositionSizingPage() {
       setDownside(Number(((1 - px / delayedPrice) * 100).toFixed(4)).toString());
     }
   }, [delayedPrice]);
+  useEffect(() => {
+    if (!selectedCompanyId) return;
+    if (bitsTargetPrice == null || bitsTargetPrice <= 0) return;
+    if (downside.trim() !== '' || downsidePrice.trim() !== '') return;
+    applyDownsidePrice(Number(bitsTargetPrice.toFixed(4)).toString());
+  }, [selectedCompanyId, bitsTargetPrice, downside, downsidePrice, applyDownsidePrice]);
 
   const result: SizingResult | null = useMemo(() => {
     if (!selectedCompany) return null;
@@ -447,46 +502,51 @@ export default function PositionSizingPage() {
   return (
     <div className="sizing-page">
       <div className="sizing-header">
-        <h2 className="sizing-title-with-tip">
-          <span
-            className="sizing-process-tip"
-            tabIndex={0}
-            role="group"
-            aria-label="Position Sizing Calculator — how the four-stage process works (hover or focus for details)"
-          >
-            <span className="sizing-process-tip-title">Position Sizing Calculator</span>
-            <span className="sizing-process-tip-icon" aria-hidden>
-              ⓘ
+        <div className="sizing-header-top">
+          <h2 className="sizing-title-with-tip">
+            <span
+              className="sizing-process-tip"
+              tabIndex={0}
+              role="group"
+              aria-label="Position Sizing Calculator — how the four-stage process works (hover or focus for details)"
+            >
+              <span className="sizing-process-tip-title">Position Sizing Calculator</span>
+              <span className="sizing-process-tip-icon" aria-hidden>
+                ⓘ
+              </span>
+              <span className="sizing-process-tip-panel">
+                <strong className="sizing-process-tip-heading">Four stages (in order)</strong>
+                <ol className="sizing-process-tip-list">
+                  <li>
+                    <strong>Weighted scores → base %</strong> — Each research metric maps to a max position cap; the
+                    model uses the most restrictive cap (and can lift the base when your <em>average</em> weighted score
+                    clears a high bar you set).
+                  </li>
+                  <li>
+                    <strong>CAGR adjustment</strong> — Scales that base by your expected 10-year return; lower expected
+                    compounding reduces how much capital you commit.
+                  </li>
+                  <li>
+                    <strong>Probability of happening</strong> — Applies a multiplier from checklist + quality scores
+                    (and their average), reflecting how likely the thesis is to play out.
+                  </li>
+                  <li>
+                    <strong>Downside haircut</strong> — Trims the result when expected drawdown is large, so you do not
+                    size as if risk were absent (and can signal “wait” at extreme downside).
+                  </li>
+                </ol>
+                <p className="sizing-process-tip-strength">
+                  <strong>Why it works:</strong> You size off <em>several independent lenses</em>—quality, return
+                  expectations, conviction, and risk—so a single strong score cannot silently justify an oversized
+                  position.
+                </p>
+              </span>
             </span>
-            <span className="sizing-process-tip-panel">
-              <strong className="sizing-process-tip-heading">Four stages (in order)</strong>
-              <ol className="sizing-process-tip-list">
-                <li>
-                  <strong>Weighted scores → base %</strong> — Each research metric maps to a max position cap; the
-                  model uses the most restrictive cap (and can lift the base when your <em>average</em> weighted score
-                  clears a high bar you set).
-                </li>
-                <li>
-                  <strong>CAGR adjustment</strong> — Scales that base by your expected 10-year return; lower expected
-                  compounding reduces how much capital you commit.
-                </li>
-                <li>
-                  <strong>Probability of happening</strong> — Applies a multiplier from checklist + quality scores
-                  (and their average), reflecting how likely the thesis is to play out.
-                </li>
-                <li>
-                  <strong>Downside haircut</strong> — Trims the result when expected drawdown is large, so you do not
-                  size as if risk were absent (and can signal “wait” at extreme downside).
-                </li>
-              </ol>
-              <p className="sizing-process-tip-strength">
-                <strong>Why it works:</strong> You size off <em>several independent lenses</em>—quality, return
-                expectations, conviction, and risk—so a single strong score cannot silently justify an oversized
-                position.
-              </p>
-            </span>
-          </span>
-        </h2>
+          </h2>
+          <button className="btn btn-ghost btn-sm" onClick={() => setShowRules(r => !r)}>
+            {showRules ? 'Hide' : 'Show'} Adjustable Rules
+          </button>
+        </div>
         <p className="sizing-subtitle">
           Select a company to see recommended position size from weighted scores, CAGR, probability (five quality
           metrics + avg), then downside haircut. Adjustable rules can be saved as your defaults in this browser.
@@ -532,7 +592,7 @@ export default function PositionSizingPage() {
                 </dd>
               </div>
               <div className="sizing-company-metrics-row">
-                <dt>Exp. 10Y CAGR (price→target)</dt>
+                <dt>Implied 10Y CAGR % (VCA)</dt>
                 <dd>{fmtPct(vcaOpts.impliedTenYearCagrPercent)}</dd>
               </div>
               <div className="sizing-company-metrics-row">
@@ -549,10 +609,12 @@ export default function PositionSizingPage() {
           ) : null}
         </div>
         <div className="sizing-field sizing-field--cagr">
-          <label className="sizing-cagr-field-label">
-            <span className="sizing-cagr-field-label-main">CAGR for 10 Years (%)</span>
-            <span className="sizing-cagr-field-label-sub">(How much you win if you are right)</span>
-          </label>
+          <div className="sizing-cagr-field-label">
+            <span className="sizing-cagr-field-label-sub sizing-cagr-field-label-sub--heading">
+              (How much you win if you are right)
+            </span>
+            <label className="sizing-cagr-field-label-main">CAGR for 10 Years (%)</label>
+          </div>
           {selectedCompanyId && vcaGem ? (
             <div className="sizing-cagr-presets" role="group" aria-label="CAGR from Value Compounding Analyst">
               <span className="sizing-cagr-presets-label">Value Compounding Analyst — quick fill</span>
@@ -627,7 +689,12 @@ export default function PositionSizingPage() {
                 </dd>
               </div>
               <div className="sizing-company-metrics-row">
-                <dt>Multiples</dt>
+                <dt>
+                  <span className="sizing-inline-tip" tabIndex={0}>
+                    Multiples
+                    <span className="sizing-inline-tip-panel">Multiples: Price in Yr 10 / Current price.</span>
+                  </span>
+                </dt>
                 <dd title="Yr-10 price ÷ current price, equals (1 + CAGR)^10">
                   {fmt(cagrProjection.multiple, 2)}×
                 </dd>
@@ -654,104 +721,172 @@ export default function PositionSizingPage() {
         </div>
         {selectedCompanyId && probabilityPreview ? (
           <div className="sizing-field sizing-field--tile sizing-field--probability">
-            <label>Probability of Happening</label>
+            <label>
+              <span className="sizing-inline-tip" tabIndex={0}>
+                Probability of Happening
+                <span className="sizing-inline-tip-panel">
+                  Shows how likely your thesis is to play out, based on five quality metrics and their average.
+                </span>
+              </span>
+            </label>
             <dl className="sizing-probability-metrics">
               {PROBABILITY_SCORE_TYPES.map(st => {
                 const d = probabilityPreview.details.find(x => x.scoreType === st);
                 return (
                   <div key={st} className="sizing-company-metrics-row">
-                    <dt title={scoreColumnDescriptions[st]}>{SCORE_LABELS[st]}</dt>
+                    <dt>
+                      <span className="sizing-inline-tip" tabIndex={0}>
+                        {SCORE_LABELS[st]}
+                        <span className="sizing-inline-tip-panel">{scoreColumnDescriptions[st]}</span>
+                      </span>
+                    </dt>
                     <dd>{d?.value != null ? fmt(d.value, 2) : '—'}</dd>
                   </div>
                 );
               })}
               <div className="sizing-company-metrics-row">
-                <dt>Avg (5 metrics)</dt>
+                <dt>
+                  <span className="sizing-inline-tip" tabIndex={0}>
+                    Avg (5 metrics)
+                    <span className="sizing-inline-tip-panel">
+                      Simple average of the five probability metrics. Used together with the individual scores for the
+                      rule check.
+                    </span>
+                  </span>
+                </dt>
                 <dd>
                   {probabilityPreview.averageMetrics != null ? fmt(probabilityPreview.averageMetrics, 2) : '—'}
                 </dd>
               </div>
               <div className="sizing-probability-rule">
                 <span className="sizing-probability-mult">
-                ×
-                {Number.isInteger(probabilityPreview.multiplier)
-                  ? probabilityPreview.multiplier
-                  : fmt(probabilityPreview.multiplier, 2)}
-              </span>
-                <span className="sizing-probability-note">{probabilityPreview.note}</span>
+                  <span className="sizing-inline-tip" tabIndex={0}>
+                    ×
+                    {Number.isInteger(probabilityPreview.multiplier)
+                      ? probabilityPreview.multiplier
+                      : fmt(probabilityPreview.multiplier, 2)}
+                    <span className="sizing-inline-tip-panel">
+                      Multiplier applied after CAGR adjustment. Higher confidence keeps more of the position.
+                    </span>
+                  </span>
+                </span>
+                <span className="sizing-probability-note">
+                  <span className="sizing-inline-tip" tabIndex={0}>
+                    {probabilityPreview.note}
+                    <span className="sizing-inline-tip-panel">
+                      Plain-English explanation of which tier matched your probability inputs.
+                    </span>
+                  </span>
+                </span>
               </div>
             </dl>
           </div>
         ) : null}
         <div className="sizing-field sizing-field--downside">
-          <label>Expected downside</label>
-          <input
-            type="range"
-            min={0}
-            max={100}
-            step={0.5}
-            className="sizing-downside-slider"
-            disabled={!selectedCompanyId}
-            value={Math.min(100, Math.max(0, parseFloat(downside) || 0))}
-            onChange={e => applyDownsidePct(e.target.value)}
-            aria-label="Expected downside percent"
-          />
-          <div className="sizing-downside-dual">
-            <span className="sizing-downside-pct-wrap">
-              <span className="sizing-downside-label">%</span>
-              <input
-                type="number"
-                step="0.5"
-                min={0}
-                max={100}
-                placeholder="e.g. 20"
-                value={downside}
-                onChange={e => applyDownsidePct(e.target.value)}
-                className="sizing-input"
-                aria-label="Expected downside percent"
-              />
+          <div className="sizing-downside-card">
+            <span className="sizing-downside-heading">
+              <span className="sizing-inline-tip" tabIndex={0}>
+                Expected downside
+                <span className="sizing-inline-tip-panel">
+                  This is your expected downside from the current price.
+                </span>
+              </span>
             </span>
-            <span className="sizing-downside-price-wrap">
-              <span className="sizing-downside-label">Downside Price</span>
-              <input
-                type="number"
-                step="0.01"
-                placeholder={delayedPrice != null && delayedPrice > 0 ? 'target' : '—'}
-                value={downsidePrice}
-                onChange={e => applyDownsidePrice(e.target.value)}
-                className="sizing-input"
-                disabled={delayedPrice == null || delayedPrice <= 0}
-                title={
-                  delayedPrice != null && delayedPrice > 0
-                    ? 'Implied price at this drawdown vs. current quote'
-                    : 'Current price unavailable — enter % only or wait for quote'
-                }
-                aria-label="Downside price implied from current quote and expected drawdown"
-              />
-            </span>
-          </div>
-          {delayedPrice != null && delayedPrice > 0 && downside !== '' && Number.isFinite(parseFloat(downside)) ? (
-            <p className="sizing-field-hint">
-              Current <strong>{fmt(delayedPrice, 2)}</strong>
-              {downsidePrice !== '' && Number.isFinite(parseFloat(downsidePrice)) ? (
-                <>
-                  {' '}
-                  → downside target <strong>{fmt(parseFloat(downsidePrice), 2)}</strong> (
-                  <strong>{fmtPct(parseFloat(downside))}</strong> drawdown from current)
-                </>
+            <div className="sizing-downside-dual">
+              <span className="sizing-downside-slider-wrap">
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={0.5}
+                  className="sizing-downside-slider"
+                  disabled={!selectedCompanyId}
+                  value={Math.min(100, Math.max(0, parseFloat(downside) || 0))}
+                  onChange={e => applyDownsidePct(e.target.value)}
+                  aria-label="Expected downside percent"
+                />
+              </span>
+              <span className="sizing-downside-pct-wrap">
+                <span className="sizing-downside-label">
+                  <span className="sizing-inline-tip" tabIndex={0}>
+                    Downside (%)
+                    {delayedPrice != null &&
+                    delayedPrice > 0 &&
+                    downsidePrice !== '' &&
+                    Number.isFinite(parseFloat(downsidePrice)) &&
+                    downside !== '' &&
+                    Number.isFinite(parseFloat(downside)) ? (
+                      <span className="sizing-inline-tip-panel">
+                        Current {fmt(delayedPrice, 2)} {'->'} downside target {fmt(parseFloat(downsidePrice), 2)} (
+                        {fmtPct(parseFloat(downside))} drawdown from current)
+                      </span>
+                    ) : (
+                      <span className="sizing-inline-tip-panel">
+                        Expected drawdown from current price. You can set it directly or by editing Downside Price.
+                      </span>
+                    )}
+                  </span>
+                </span>
+                <input
+                  type="number"
+                  step="0.5"
+                  min={0}
+                  max={100}
+                  placeholder="e.g. 20"
+                  value={downside}
+                  onChange={e => applyDownsidePct(e.target.value)}
+                  className="sizing-input"
+                  aria-label="Expected downside percent"
+                />
+              </span>
+              <span className="sizing-downside-price-wrap">
+                <span className="sizing-downside-label">Downside Price</span>
+                <input
+                  type="number"
+                  step="0.01"
+                  placeholder={delayedPrice != null && delayedPrice > 0 ? 'target' : '—'}
+                  value={downsidePrice}
+                  onChange={e => applyDownsidePrice(e.target.value)}
+                  className="sizing-input"
+                  disabled={delayedPrice == null || delayedPrice <= 0}
+                  title={
+                    delayedPrice != null && delayedPrice > 0
+                      ? 'Implied price at this drawdown vs. current quote'
+                      : 'Current price unavailable — enter % only or wait for quote'
+                  }
+                  aria-label="Downside price implied from current quote and expected drawdown"
+                />
+              </span>
+            </div>
+            <div className="sizing-downside-derived-list">
+              {downsideToVcaTenYearCagr != null ? (
+                <span className="sizing-downside-derived-metric">
+                  <span className="sizing-inline-tip" tabIndex={0}>
+                    10 Y CAGR % from Downside Price to Target Price:{' '}
+                    <strong>{fmtPct(downsideToVcaTenYearCagr, 2)}</strong>
+                    <span className="sizing-inline-tip-panel">
+                      Annualized 10-year return if your entry is the Downside Price and exit is the Value Compounding
+                      Analyst 10Y target price.
+                    </span>
+                  </span>
+                </span>
               ) : null}
-            </p>
-          ) : selectedCompanyId && !quotesLoading ? (
+              {downsideToTargetExpectedReturn != null ? (
+                <span className="sizing-downside-derived-metric sizing-downside-tooltip" tabIndex={0}>
+                  Upside from downside entry to 10 Y target:{' '}
+                  <strong>{fmtPct(downsideToTargetExpectedReturn, 2)}</strong>
+                  <span className="sizing-downside-tooltip-panel">
+                    If you can enter near your downside price and the thesis reaches the Value Compounding Analyst 10Y
+                    target, this is the total upside over the full period.
+                  </span>
+                </span>
+              ) : null}
+            </div>
+          </div>
+          {selectedCompanyId && !quotesLoading && (delayedPrice == null || delayedPrice <= 0) ? (
             <p className="sizing-field-hint">Enter downside as %, or set a target price once a quote loads.</p>
           ) : null}
         </div>
-      </div>
-
-      {/* Toggle adjustable rules */}
-      <div className="sizing-rules-toggle">
-        <button className="btn btn-ghost btn-sm" onClick={() => setShowRules(r => !r)}>
-          {showRules ? 'Hide' : 'Show'} Adjustable Rules
-        </button>
       </div>
 
       {showRules && (
