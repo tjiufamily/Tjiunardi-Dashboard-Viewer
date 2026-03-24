@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { useCompanies, useGems, useCategories, useCompanyRuns } from '../hooks/useData';
+import { navigateBackWithFallback, readFromState } from '../lib/navigationState';
 import type { GemRun } from '../types';
 
 type GemSort =
@@ -62,6 +63,7 @@ function parseGemSortParam(sp: URLSearchParams): GemSort {
 export default function CompanyDetailPage() {
   const { companyId } = useParams<{ companyId: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const { companies, loading: companiesLoading } = useCompanies();
   const { gems, loading: gemsLoading } = useGems();
@@ -92,6 +94,12 @@ export default function CompanyDetailPage() {
   const [showGemPanel, setShowGemPanel] = useState(() =>
     typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches
   );
+
+  const backTo = readFromState(location.state);
+
+  const handleBack = () => {
+    navigateBackWithFallback(navigate, backTo, '/');
+  };
 
   const loading = companiesLoading || gemsLoading || runsLoading;
   const company = companies.find(c => c.id === companyId);
@@ -195,7 +203,7 @@ export default function CompanyDetailPage() {
       <div className="empty-state">
         <h3>Company not found</h3>
         <p>This company may have been removed.</p>
-        <button className="btn btn-primary" onClick={() => navigate('/')}>Back to Companies</button>
+        <button className="btn btn-primary" onClick={handleBack}>Back to Companies</button>
       </div>
     );
   }
@@ -204,7 +212,7 @@ export default function CompanyDetailPage() {
     <div className="detail-page">
       {/* Header */}
       <div className="detail-header">
-        <button className="btn btn-ghost btn-back" onClick={() => navigate('/')}>
+        <button className="btn btn-ghost btn-back" onClick={handleBack}>
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M19 12H5" />
             <path d="M12 19l-7-7 7-7" />

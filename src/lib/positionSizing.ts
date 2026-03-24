@@ -162,6 +162,10 @@ export type SizingInputs = {
   avgSuperiorMaxPct: number;
   probabilityTiers: ProbabilityTierRule[];
   probabilityAllBelow: number;
+  includeStage1?: boolean;
+  includeStage2?: boolean;
+  includeStage3?: boolean;
+  includeStage4?: boolean;
 };
 
 export type MetricResult = {
@@ -219,6 +223,11 @@ function resolveScoreBracket(
 }
 
 export function calculatePositionSize(inputs: SizingInputs): SizingResult {
+  const includeStage1 = inputs.includeStage1 ?? true;
+  const includeStage2 = inputs.includeStage2 ?? true;
+  const includeStage3 = inputs.includeStage3 ?? true;
+  const includeStage4 = inputs.includeStage4 ?? true;
+
   const warnings: string[] = [];
   const metricResults: MetricResult[] = [];
 
@@ -233,37 +242,44 @@ export function calculatePositionSize(inputs: SizingInputs): SizingResult {
   }
 
   const scoredMetrics = metricResults.filter(m => m.score != null);
+  const averageWeightedScore = meanWeightedScore(inputs.scores);
   let bracketBasePosition = inputs.baseMax;
   let baseLimitedBy: ScoreType | null = null;
-
-  if (scoredMetrics.length === 0) {
-    bracketBasePosition = 0;
-    warnings.push('No scored metrics available.');
-  } else {
-    for (const m of scoredMetrics) {
-      if (m.maxPct < bracketBasePosition) {
-        bracketBasePosition = m.maxPct;
-        baseLimitedBy = m.scoreType;
-      }
-    }
-  }
-
-  const averageWeightedScore = meanWeightedScore(inputs.scores);
   let basePosition = bracketBasePosition;
   let avgScoreRuleApplied = false;
   const supT = inputs.avgSuperiorThreshold;
   const supMax = inputs.avgSuperiorMaxPct;
-  if (averageWeightedScore != null && averageWeightedScore > supT && scoredMetrics.length > 0) {
-    avgScoreRuleApplied = true;
-    basePosition = supMax;
-    baseLimitedBy = null;
+
+  if (!includeStage1) {
+    bracketBasePosition = inputs.baseMax;
+    basePosition = inputs.baseMax;
+  } else {
+    if (scoredMetrics.length === 0) {
+      bracketBasePosition = 0;
+      warnings.push('No scored metrics available.');
+    } else {
+      for (const m of scoredMetrics) {
+        if (m.maxPct < bracketBasePosition) {
+          bracketBasePosition = m.maxPct;
+          baseLimitedBy = m.scoreType;
+        }
+      }
+    }
+    basePosition = bracketBasePosition;
+    if (averageWeightedScore != null && averageWeightedScore > supT && scoredMetrics.length > 0) {
+      avgScoreRuleApplied = true;
+      basePosition = supMax;
+      baseLimitedBy = null;
+    }
   }
 
   let cagrMultiplier: number | null = null;
   let cagrNote = '';
   let afterCagr = basePosition;
 
-  if (inputs.cagr == null) {
+  if (!includeStage2) {
+    cagrNote = 'Stage 2 disabled — using base position as-is.';
+  } else if (inputs.cagr == null) {
     cagrNote = 'CAGR not entered — using base position as-is.';
     warnings.push('Enter CAGR for 10 years to refine sizing.');
   } else if (inputs.cagr < inputs.cagrFloor) {
@@ -290,13 +306,20 @@ export function calculatePositionSize(inputs: SizingInputs): SizingResult {
     tiers: inputs.probabilityTiers,
     allBelow: inputs.probabilityAllBelow,
   });
-  let afterProbability = Math.round(afterCagr * prob.multiplier * 100) / 100;
+  const probabilityMultiplier = includeStage3 ? prob.multiplier : 1;
+  const probabilityNote = includeStage3 ? prob.note : 'Stage 3 disabled — multiplier forced to ×1.';
+  const probabilitySkipped = includeStage3 ? prob.skipped : true;
+  let afterProbability = Math.round(afterCagr * probabilityMultiplier * 100) / 100;
 
   let downsideHaircut: number | null = null;
   let downsideNote = '';
   let finalPosition = afterProbability;
 
-  if (inputs.downside == null) {
+  if (!includeStage4) {
+    downsideHaircut = 1;
+    downsideNote = 'Stage 4 disabled — using post-probability position as-is.';
+    finalPosition = afterProbability;
+  } else if (inputs.downside == null) {
     downsideNote = 'Downside not entered — using post-probability position as-is.';
     warnings.push('Enter expected downside to refine sizing.');
   } else {
@@ -342,9 +365,9 @@ export function calculatePositionSize(inputs: SizingInputs): SizingResult {
     probabilityDetails: prob.details,
     probabilityAverage:
       prob.averageMetrics == null ? null : Math.round(prob.averageMetrics * 100) / 100,
-    probabilityMultiplier: prob.multiplier,
-    probabilityNote: prob.note,
-    probabilitySkipped: prob.skipped,
+    probabilityMultiplier,
+    probabilityNote,
+    probabilitySkipped,
     afterProbability,
     downsideHaircut,
     downsideNote,

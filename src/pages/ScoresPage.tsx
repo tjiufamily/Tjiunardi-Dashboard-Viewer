@@ -1,9 +1,10 @@
 import { useState, useMemo } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useScoresData } from '../hooks/useScores';
 import { SCORE_TYPES, SCORE_LABELS } from '../types';
 import type { ScoreType, CompanyScores } from '../types';
 import { avgOfScores, rowPassesColumnMins } from '../lib/columnMinFilters';
+import { currentRouteWithSearch } from '../lib/navigationState';
 
 type SortKey = 'name' | 'ticker' | ScoreType | 'avg';
 type SortDir = 'asc' | 'desc';
@@ -16,6 +17,8 @@ function fmt(v: number | null | undefined): string {
 export default function ScoresPage() {
   const { companyScores, loading, scoreColumnDescriptions } = useScoresData();
   const navigate = useNavigate();
+  const location = useLocation();
+  const returnTo = currentRouteWithSearch(location.pathname, location.search);
 
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
@@ -199,6 +202,7 @@ export default function ScoresPage() {
                     <Link
                       className="scores-company-link"
                       to={`/company/${c.companyId}?gemSort=weighted-desc`}
+                      state={{ from: returnTo }}
                     >
                       {c.companyName}
                     </Link>

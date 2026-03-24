@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
-import { useSearchParams, useNavigate, Link } from 'react-router-dom';
+import { useSearchParams, useNavigate, Link, useLocation } from 'react-router-dom';
 import { useCompanies, useGems, useAllRuns } from '../hooks/useData';
 import { useScoresData } from '../hooks/useScores';
 import {
@@ -21,11 +21,25 @@ import { avgOfScores, rowPassesColumnMins, parseMinInput } from '../lib/columnMi
 import { useStockQuotes } from '../hooks/useStockQuotes';
 import { normalizeTickerSymbol } from '../lib/stockQuotes';
 import { loadPriceOverrides, persistPriceOverrides } from '../lib/quoteOverrides';
+import { currentRouteWithSearch } from '../lib/navigationState';
 
 /** Default gem when opening Metrics with no `?gem=` (match by name). */
 const DEFAULT_METRICS_GEM_NAME = 'Value Compounding Analyst V3.3';
 const GEM_PARAM = 'gem';
 const METRIC_COL_ID_SEP = '::';
+const LS_METRICS_SELECTED_GEMS = 'tjiunardi.dashboard.metrics.selectedGems.v1';
+
+function loadPersistedMetricsGemIds(): string[] {
+  try {
+    const raw = localStorage.getItem(LS_METRICS_SELECTED_GEMS);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
+  } catch {
+    return [];
+  }
+}
 
 type SortDir = 'asc' | 'desc';
 type SortKey =
@@ -64,6 +78,86 @@ function scoreCellClass(score: number | undefined): string {
   return 'score-cell low';
 }
 
+type BandThreshold = {
+  excellent: number;
+  good: number;
+  fair: number;
+};
+
+const CAGR_THRESHOLDS: BandThreshold = {
+  excellent: 20,
+  good: 15,
+  fair: 10,
+};
+
+function tonedClassFromHigherIsBetter(value: number | null | undefined, t: BandThreshold): string {
+  if (value == null || Number.isNaN(value)) return 'metric-tone metric-tone--na';
+  if (value >= t.excellent) return 'metric-tone metric-tone--excellent';
+  if (value >= t.good) return 'metric-tone metric-tone--good';
+  if (value >= t.fair) return 'metric-tone metric-tone--fair';
+  return 'metric-tone metric-tone--low';
+}
+
+function tonedClassFromLowerIsBetter(value: number | null | undefined, t: BandThreshold): string {
+  if (value == null || Number.isNaN(value)) return 'metric-tone metric-tone--na';
+  if (value <= t.fair) return 'metric-tone metric-tone--excellent';
+  if (value <= t.good) return 'metric-tone metric-tone--good';
+  if (value <= t.excellent) return 'metric-tone metric-tone--fair';
+  return 'metric-tone metric-tone--low';
+}
+
+function isTargetPeMetric(label: string, storageKey: string): boolean {
+  const s = `${label} ${storageKey}`.toLowerCase();
+  const hasPe = /\bp\s*\/?\s*e\b|\bpe\b|\bp_e\b|\bp\/e\b/.test(s);
+  const hasTarget = /target|terminal|exit/.test(s);
+  return hasPe && hasTarget;
+}
+
+function isDownsideRiskMetric(label: string, storageKey: string): boolean {
+  const s = `${label} ${storageKey}`.toLowerCase();
+  return /downside/.test(s) && /risk|drawdown|loss/.test(s);
+}
+
+function isCagrLikeMetric(label: string, storageKey: string): boolean {
+  const s = `${label} ${storageKey}`.toLowerCase();
+  if (/bits\s*to\s*vca/.test(s) && /cagr/.test(s)) return true;
+  if (/implied/.test(s) && /cagr/.test(s)) return true;
+  if (/base\s*case/.test(s) && /growth/.test(s)) return true;
+  if (/value\s*compounding/.test(s)) return true;
+  return /cagr|compound/.test(s) || (/growth/.test(s) && /%|percent|pct/.test(s));
+}
+
+function metricToneClassBySemanticType(
+  value: number | null | undefined,
+  label: string,
+  storageKey: string,
+): string {
+  if (value == null || Number.isNaN(value)) return 'metric-tone metric-tone--na';
+
+  if (isTargetPeMetric(label, storageKey)) {
+    // Target P/E is context-dependent; keep cues neutral (blue/amber), not good-vs-bad.
+    if (value < 12) return 'metric-tone metric-tone--cool';
+    if (value <= 24) return 'metric-tone metric-tone--neutral';
+    return 'metric-tone metric-tone--warm';
+  }
+
+  if (isDownsideRiskMetric(label, storageKey)) {
+    // Lower downside risk is better: <=15 excellent, <=25 good, <=35 fair, >35 low.
+    return tonedClassFromLowerIsBetter(value, {
+      excellent: 35,
+      good: 25,
+      fair: 15,
+    });
+  }
+
+  if (isCagrLikeMetric(label, storageKey)) {
+    // CAGR-like metrics: >=20 excellent, >=15 good, >=10 fair, else low.
+    return tonedClassFromHigherIsBetter(value, CAGR_THRESHOLDS);
+  }
+
+  return '';
+}
+
 type Row = {
   companyId: string;
   companyName: string;
@@ -85,6 +179,8 @@ type EnrichedRow = Row & {
 export default function MetricsComparePage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const returnTo = currentRouteWithSearch(location.pathname, location.search);
   const gemIdsFromUrl = useMemo(() => {
     const ids = searchParams.getAll(GEM_PARAM).filter(Boolean);
     if (ids.length > 0) return ids;
@@ -132,6 +228,15 @@ export default function MetricsComparePage() {
     if (gemIdsFromUrl.length > 0) {
       const valid = gemIdsFromUrl.filter(id => gems.some(g => g.id === id));
       if (valid.length > 0) setSelectedGemIds(valid);
+      defaultMetricsGemAppliedRef.current = true;
+      return;
+    }
+    const persisted = loadPersistedMetricsGemIds().filter(id => gems.some(g => g.id === id));
+    if (persisted.length > 0) {
+      setSelectedGemIds(persisted);
+      const next = new URLSearchParams();
+      for (const id of persisted) next.append(GEM_PARAM, id);
+      setSearchParams(next, { replace: true });
       defaultMetricsGemAppliedRef.current = true;
       return;
     }
@@ -481,6 +586,11 @@ export default function MetricsComparePage() {
 
   const onGemChange = (ids: string[]) => {
     setSelectedGemIds(ids);
+    try {
+      localStorage.setItem(LS_METRICS_SELECTED_GEMS, JSON.stringify(ids));
+    } catch {
+      /* ignore */
+    }
     if (ids.length > 0) {
       const next = new URLSearchParams();
       for (const id of ids) next.append(GEM_PARAM, id);
@@ -502,6 +612,12 @@ export default function MetricsComparePage() {
   const scoreColumnCount = showWeightedScores ? SCORE_TYPES.length + 1 : 0;
   const bitsDerivedColCount = showBitsDerived ? 2 : 0;
   const tableColSpan = 5 + bitsDerivedColCount + metricColumns.length + scoreColumnCount;
+  const impliedCagrClass = (v: number | null | undefined) =>
+    metricToneClassBySemanticType(v, 'Implied 10Y CAGR % (VCA)', 'implied_cagr_percent_vca');
+  const bitsDownsideRiskClass = (v: number | null | undefined) =>
+    metricToneClassBySemanticType(v, 'Downside Risk % (BITS)', 'bits_downside_risk_percent');
+  const bitsToVcaCagrClass = (v: number | null | undefined) =>
+    metricToneClassBySemanticType(v, '10Y CAGR % (BITS->VCA)', 'bits_to_vca_ten_year_cagr_percent');
 
   if (loading && selectedGemIds.length === 0) {
     return (
@@ -838,6 +954,7 @@ export default function MetricsComparePage() {
                         <Link
                           className="scores-company-link"
                           to={`/gem/${primarySelectedGem?.id ?? selectedGemIds[0]}?company=${encodeURIComponent(r.companyId)}`}
+                          state={{ from: returnTo }}
                         >
                           {r.companyName}
                         </Link>
@@ -882,7 +999,7 @@ export default function MetricsComparePage() {
                           ) : null}
                         </div>
                       </td>
-                      <td className="metric-cell">
+                      <td className={`metric-cell ${impliedCagrClass(r.impliedCagr)}`}>
                         {fmtImpliedCagrCell(
                           r.impliedCagr,
                           quotesLoading && r.lastPrice == null,
@@ -890,13 +1007,20 @@ export default function MetricsComparePage() {
                         )}
                       </td>
                       {showBitsDerived && (
-                        <td className="metric-cell">{fmtImpliedCagrCell(r.bitsDownsideRisk, false, false)}</td>
+                        <td className={`metric-cell ${bitsDownsideRiskClass(r.bitsDownsideRisk)}`}>
+                          {fmtImpliedCagrCell(r.bitsDownsideRisk, false, false)}
+                        </td>
                       )}
                       {showBitsDerived && (
-                        <td className="metric-cell">{fmtImpliedCagrCell(r.bitsToVcaTenYearCagr, false, false)}</td>
+                        <td className={`metric-cell ${bitsToVcaCagrClass(r.bitsToVcaTenYearCagr)}`}>
+                          {fmtImpliedCagrCell(r.bitsToVcaTenYearCagr, false, false)}
+                        </td>
                       )}
                       {metricColumns.map(col => (
-                        <td key={col.id} className="metric-cell">
+                        <td
+                          key={col.id}
+                          className={`metric-cell ${metricToneClassBySemanticType(r.metrics[col.id], col.label, col.key)}`}
+                        >
                           {fmtMetric(r.metrics[col.id])}
                         </td>
                       ))}

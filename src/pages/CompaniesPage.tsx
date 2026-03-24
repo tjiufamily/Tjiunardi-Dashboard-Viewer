@@ -1,8 +1,9 @@
 import { useState, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useCompanies, useGems, useCategories, useAllRuns } from '../hooks/useData';
 import { useScoresData } from '../hooks/useScores';
 import { avgOfScores } from '../lib/columnMinFilters';
+import { currentRouteWithSearch } from '../lib/navigationState';
 import type { Gem } from '../types';
 
 type ViewMode = 'companies' | 'gems';
@@ -21,6 +22,8 @@ export default function CompaniesPage() {
   const { runs, loading: runsLoading } = useAllRuns();
   const { companyScores, loading: scoresLoading } = useScoresData();
   const navigate = useNavigate();
+  const location = useLocation();
+  const returnTo = currentRouteWithSearch(location.pathname, location.search);
 
   const [viewMode, setViewMode] = useState<ViewMode>('companies');
   const [search, setSearch] = useState('');
@@ -400,10 +403,12 @@ export default function CompaniesPage() {
                 <div
                   key={company.id}
                   className={`company-card ${reportCount > 0 ? 'has-reports' : ''} ${eliteAvg ? 'company-card--elite-avg' : ''}`}
-                  onClick={() => navigate(`/company/${company.id}`)}
+                  onClick={() => navigate(`/company/${company.id}`, { state: { from: returnTo } })}
                   role="button"
                   tabIndex={0}
-                  onKeyDown={(e) => e.key === 'Enter' && navigate(`/company/${company.id}`)}
+                  onKeyDown={(e) =>
+                    e.key === 'Enter' && navigate(`/company/${company.id}`, { state: { from: returnTo } })
+                  }
                 >
                   <div className="company-card-header">
                     <span className="company-ticker">{company.ticker}</span>
@@ -511,10 +516,12 @@ export default function CompaniesPage() {
                       <div
                         key={gem.id}
                         className={`gem-card ${companyId ? 'has-runs' : ''}`}
-                        onClick={() => navigate(`/gem/${gem.id}`)}
+                        onClick={() => navigate(`/gem/${gem.id}`, { state: { from: returnTo } })}
                         role="button"
                         tabIndex={0}
-                        onKeyDown={(e) => e.key === 'Enter' && navigate(`/gem/${gem.id}`)}
+                        onKeyDown={(e) =>
+                          e.key === 'Enter' && navigate(`/gem/${gem.id}`, { state: { from: returnTo } })
+                        }
                       >
                         <div className="gem-card-header">
                           <span className="gem-type">{gem.type}</span>

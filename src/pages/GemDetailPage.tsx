@@ -1,12 +1,14 @@
 import { useState, useMemo, useEffect } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { useCompanies, useGems, useGemRuns } from '../hooks/useData';
+import { navigateBackWithFallback, readFromState } from '../lib/navigationState';
 
 type CompanySort = 'name-asc' | 'name-desc' | 'reports-desc' | 'latest';
 
 export default function GemDetailPage() {
   const { gemId } = useParams<{ gemId: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const { companies, loading: companiesLoading } = useCompanies();
   const { gems, loading: gemsLoading } = useGems();
@@ -19,6 +21,12 @@ export default function GemDetailPage() {
   const [showCompanyPanel, setShowCompanyPanel] = useState(() =>
     typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches
   );
+
+  const backTo = readFromState(location.state);
+
+  const handleBack = () => {
+    navigateBackWithFallback(navigate, backTo, '/');
+  };
 
   const loading = companiesLoading || gemsLoading || runsLoading;
   const gem = gems.find(g => g.id === gemId);
@@ -117,7 +125,7 @@ export default function GemDetailPage() {
       <div className="empty-state">
         <h3>Gem not found</h3>
         <p>This gem may have been removed.</p>
-        <button className="btn btn-primary" onClick={() => navigate('/')}>Back to Home</button>
+        <button className="btn btn-primary" onClick={handleBack}>Back to Home</button>
       </div>
     );
   }
@@ -125,7 +133,7 @@ export default function GemDetailPage() {
   return (
     <div className="detail-page">
       <div className="detail-header">
-        <button className="btn btn-ghost btn-back" onClick={() => navigate('/')}>
+        <button className="btn btn-ghost btn-back" onClick={handleBack}>
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M19 12H5" />
             <path d="M12 19l-7-7 7-7" />
