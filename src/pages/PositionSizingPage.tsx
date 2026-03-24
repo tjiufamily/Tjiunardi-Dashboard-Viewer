@@ -48,6 +48,8 @@ const LS_SIZING_SCORE = 'tjiunardi.dashboard.sizing.score.v1';
 const LS_SIZING_CAGR = 'tjiunardi.dashboard.sizing.cagr.v1';
 const LS_SIZING_DOWNSIDE = 'tjiunardi.dashboard.sizing.downside.v1';
 const LS_SIZING_PROBABILITY = 'tjiunardi.dashboard.sizing.probability.v1';
+const LS_SIZING_STAGE_TOGGLES = 'tjiunardi.dashboard.sizing.stageToggles.v1';
+const LS_SIZING_FORM = 'tjiunardi.dashboard.sizing.form.v1';
 
 function fmt(v: number | null | undefined, decimals = 1): string {
   if (v == null) return '—';
@@ -202,6 +204,7 @@ export default function PositionSizingPage() {
   );
 
   const urlHydratedRef = useRef(false);
+  const formStateHydratedRef = useRef(false);
   const sizingDefaultsLoaded = useRef(false);
 
   const [downside, setDownside] = useState<string>('');
@@ -226,6 +229,12 @@ export default function PositionSizingPage() {
   const [cagrBrackets, setCagrBrackets] = useState<CagrBracket[]>(() => [...DEFAULT_CAGR_BRACKETS]);
   const [cagrFloor, setCagrFloor] = useState(DEFAULT_CAGR_FLOOR);
   const [downsideBrackets, setDownsideBrackets] = useState<DownsideBracket[]>(() => [...DEFAULT_DOWNSIDE_BRACKETS]);
+  const [stageToggles, setStageToggles] = useState({
+    stage1: true,
+    stage2: true,
+    stage3: true,
+    stage4: true,
+  });
 
   useEffect(() => {
     if (sizingDefaultsLoaded.current) return;
@@ -266,10 +275,33 @@ export default function PositionSizingPage() {
         const o = JSON.parse(rawD) as { downsideBrackets?: DownsideBracket[] };
         if (Array.isArray(o.downsideBrackets) && o.downsideBrackets.length) setDownsideBrackets(o.downsideBrackets);
       }
+      const rawT = localStorage.getItem(LS_SIZING_STAGE_TOGGLES);
+      if (rawT) {
+        const o = JSON.parse(rawT) as {
+          stage1?: boolean;
+          stage2?: boolean;
+          stage3?: boolean;
+          stage4?: boolean;
+        };
+        setStageToggles({
+          stage1: o.stage1 ?? true,
+          stage2: o.stage2 ?? true,
+          stage3: o.stage3 ?? true,
+          stage4: o.stage4 ?? true,
+        });
+      }
     } catch {
       /* ignore */
     }
   }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_SIZING_STAGE_TOGGLES, JSON.stringify(stageToggles));
+    } catch {
+      /* ignore */
+    }
+  }, [stageToggles]);
 
   const saveScoreRulesDefault = useCallback(() => {
     try {
@@ -319,6 +351,44 @@ export default function PositionSizingPage() {
     const cParam = searchParams.get('company') ?? '';
     const cagrParam = searchParams.get('cagr');
     const srcParam = searchParams.get('cagrSrc');
+    const hasUrlInputs = cParam !== '' || cagrParam != null || srcParam != null;
+
+    if (!urlHydratedRef.current && !hasUrlInputs) {
+      try {
+        const rawForm = localStorage.getItem(LS_SIZING_FORM);
+        if (rawForm) {
+          const o = JSON.parse(rawForm) as {
+            selectedCompanyId?: string;
+            cagr?: string;
+            cagrSource?: CagrSource;
+            downside?: string;
+            downsidePrice?: string;
+          };
+          if (typeof o.selectedCompanyId === 'string') setSelectedCompanyId(o.selectedCompanyId);
+          if (typeof o.cagr === 'string') setCagr(o.cagr);
+          if (
+            o.cagrSource === 'implied' ||
+            o.cagrSource === 'base_case' ||
+            o.cagrSource === 'ten_y_total' ||
+            o.cagrSource === 'five_y_vc' ||
+            o.cagrSource === 'custom'
+          ) {
+            setCagrSource(o.cagrSource);
+          }
+          if (typeof o.downside === 'string') setDownside(o.downside);
+          if (typeof o.downsidePrice === 'string') setDownsidePrice(o.downsidePrice);
+        }
+      } catch {
+        /* ignore */
+      } finally {
+        urlHydratedRef.current = true;
+        formStateHydratedRef.current = true;
+      }
+      return;
+    }
+
+    if (urlHydratedRef.current && !hasUrlInputs) return;
+
     setSelectedCompanyId(cParam);
     if (cagrParam !== null) setCagr(cagrParam);
     else if (cParam) setCagr('');
@@ -337,8 +407,27 @@ export default function PositionSizingPage() {
         }
       }
       urlHydratedRef.current = true;
+      formStateHydratedRef.current = true;
     }
-  }, [searchParams]);
+  }, [searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (!formStateHydratedRef.current) return;
+    try {
+      localStorage.setItem(
+        LS_SIZING_FORM,
+        JSON.stringify({
+          selectedCompanyId,
+          cagr,
+          cagrSource,
+          downside,
+          downsidePrice,
+        }),
+      );
+    } catch {
+      /* ignore */
+    }
+  }, [selectedCompanyId, cagr, cagrSource, downside, downsidePrice]);
 
   /** When no CAGR in URL, fill from Value Compounding Analyst metrics (default: implied from price → 10Y target). */
   useEffect(() => {
@@ -418,6 +507,15 @@ export default function PositionSizingPage() {
     },
     [delayedPrice],
   );
+  const defaultDownsidePrice = useMemo(() => {
+    if (bitsTargetPrice == null || bitsTargetPrice <= 0) return '';
+    return Number(bitsTargetPrice.toFixed(4)).toString();
+  }, [bitsTargetPrice]);
+
+  const resetDownsidePriceToDefault = useCallback(() => {
+    if (!defaultDownsidePrice) return;
+    applyDownsidePrice(defaultDownsidePrice);
+  }, [applyDownsidePrice, defaultDownsidePrice]);
 
   useEffect(() => {
     if (delayedPrice == null || delayedPrice <= 0) return;
@@ -433,10 +531,10 @@ export default function PositionSizingPage() {
   }, [delayedPrice]);
   useEffect(() => {
     if (!selectedCompanyId) return;
-    if (bitsTargetPrice == null || bitsTargetPrice <= 0) return;
+    if (!defaultDownsidePrice) return;
     if (downside.trim() !== '' || downsidePrice.trim() !== '') return;
-    applyDownsidePrice(Number(bitsTargetPrice.toFixed(4)).toString());
-  }, [selectedCompanyId, bitsTargetPrice, downside, downsidePrice, applyDownsidePrice]);
+    applyDownsidePrice(defaultDownsidePrice);
+  }, [selectedCompanyId, defaultDownsidePrice, downside, downsidePrice, applyDownsidePrice]);
 
   const result: SizingResult | null = useMemo(() => {
     if (!selectedCompany) return null;
@@ -454,6 +552,10 @@ export default function PositionSizingPage() {
       avgSuperiorMaxPct,
       probabilityTiers,
       probabilityAllBelow,
+      includeStage1: stageToggles.stage1,
+      includeStage2: stageToggles.stage2,
+      includeStage3: stageToggles.stage3,
+      includeStage4: stageToggles.stage4,
     });
   }, [
     selectedCompany,
@@ -469,6 +571,7 @@ export default function PositionSizingPage() {
     avgSuperiorMaxPct,
     probabilityTiers,
     probabilityAllBelow,
+    stageToggles,
   ]);
 
   const exportMarkdown = async () => {
@@ -543,9 +646,17 @@ export default function PositionSizingPage() {
               </span>
             </span>
           </h2>
-          <button className="btn btn-ghost btn-sm" onClick={() => setShowRules(r => !r)}>
-            {showRules ? 'Hide' : 'Show'} Adjustable Rules
-          </button>
+          <label className="toggle-label small sizing-rules-switch">
+            <span className="sizing-rules-switch-text">Adjustable Rules</span>
+            <input
+              type="checkbox"
+              checked={showRules}
+              onChange={e => setShowRules(e.target.checked)}
+              aria-label="Toggle adjustable rules"
+            />
+            <span className="toggle-switch" aria-hidden />
+            <span className="sizing-rules-switch-state">{showRules ? 'On' : 'Off'}</span>
+          </label>
         </div>
         <p className="sizing-subtitle">
           Select a company to see recommended position size from weighted scores, CAGR, probability (five quality
@@ -608,117 +719,119 @@ export default function PositionSizingPage() {
             <p className="sizing-company-metrics-note">No Value Compounding Analyst gem — target-based metrics unavailable.</p>
           ) : null}
         </div>
-        <div className="sizing-field sizing-field--cagr">
-          <div className="sizing-cagr-field-label">
-            <span className="sizing-cagr-field-label-sub sizing-cagr-field-label-sub--heading">
-              (How much you win if you are right)
-            </span>
-            <label className="sizing-cagr-field-label-main">CAGR for 10 Years (%)</label>
-          </div>
-          {selectedCompanyId && vcaGem ? (
-            <div className="sizing-cagr-presets" role="group" aria-label="CAGR from Value Compounding Analyst">
-              <span className="sizing-cagr-presets-label">Value Compounding Analyst — quick fill</span>
-              <button
-                type="button"
-                className={`sizing-cagr-chip ${cagrSource === 'implied' ? 'active' : ''}`}
-                disabled={
-                  vcaOpts.impliedTenYearCagrPercent == null &&
-                  vcaOpts.baseCase == null &&
-                  vcaOpts.tenYearTotalCagr == null &&
-                  vcaOpts.fiveYearValueCompounding == null
-                }
-                onClick={() => applyCagrPreset('implied')}
-              >
-                <span className="sizing-cagr-chip-title">Implied (price → 10Y target)</span>
-                <span className="sizing-cagr-chip-value">{fmtPct(effectiveImpliedCagr(vcaOpts))}</span>
-              </button>
-              <button
-                type="button"
-                className={`sizing-cagr-chip ${cagrSource === 'base_case' ? 'active' : ''}`}
-                disabled={vcaOpts.baseCase == null}
-                onClick={() => applyCagrPreset('base_case')}
-              >
-                <span className="sizing-cagr-chip-title">Base case growth</span>
-                <span className="sizing-cagr-chip-value">{fmtPct(vcaOpts.baseCase)}</span>
-              </button>
-              <button
-                type="button"
-                className={`sizing-cagr-chip ${cagrSource === 'ten_y_total' ? 'active' : ''}`}
-                disabled={vcaOpts.tenYearTotalCagr == null}
-                onClick={() => applyCagrPreset('ten_y_total')}
-              >
-                <span className="sizing-cagr-chip-title">10 Y Total CAGR %</span>
-                <span className="sizing-cagr-chip-value">{fmtPct(vcaOpts.tenYearTotalCagr)}</span>
-              </button>
-              <button
-                type="button"
-                className={`sizing-cagr-chip ${cagrSource === 'five_y_vc' ? 'active' : ''}`}
-                disabled={vcaOpts.fiveYearValueCompounding == null}
-                onClick={() => applyCagrPreset('five_y_vc')}
-              >
-                <span className="sizing-cagr-chip-title">5 Y value compounding</span>
-                <span className="sizing-cagr-chip-value">{fmtPct(vcaOpts.fiveYearValueCompounding)}</span>
-              </button>
+        {selectedCompanyId ? (
+          <div className="sizing-field sizing-field--cagr">
+            <div className="sizing-cagr-field-label">
+              <span className="sizing-cagr-field-label-sub sizing-cagr-field-label-sub--heading">
+                (How much you win if you are right)
+              </span>
+              <label className="sizing-cagr-field-label-main">CAGR for 10 Years (%)</label>
             </div>
-          ) : selectedCompanyId && !gemsLoading ? (
-            <p className="sizing-field-hint">No &quot;Value Compounding Analyst&quot; gem found — enter CAGR manually.</p>
-          ) : null}
-          <input
-            type="number"
-            step="0.5"
-            placeholder="e.g. 15"
-            value={cagr}
-            onChange={e => {
-              setCagr(e.target.value);
-              setCagrSource('custom');
-            }}
-            className="sizing-input"
-          />
-          {cagrProjection.multiple != null ? (
-            <dl className="sizing-cagr-projection">
-              <div className="sizing-company-metrics-row">
-                <dt>Price in Yr 10</dt>
-                <dd>
-                  {cagrProjection.priceYr10 != null ? (
-                    fmt(cagrProjection.priceYr10, 2)
-                  ) : quotesLoading ? (
-                    <span className="sizing-metrics-pending">…</span>
-                  ) : (
-                    '—'
-                  )}
-                </dd>
+            {selectedCompanyId && vcaGem ? (
+              <div className="sizing-cagr-presets" role="group" aria-label="CAGR from Value Compounding Analyst">
+                <span className="sizing-cagr-presets-label">Value Compounding Analyst — quick fill</span>
+                <button
+                  type="button"
+                  className={`sizing-cagr-chip ${cagrSource === 'implied' ? 'active' : ''}`}
+                  disabled={
+                    vcaOpts.impliedTenYearCagrPercent == null &&
+                    vcaOpts.baseCase == null &&
+                    vcaOpts.tenYearTotalCagr == null &&
+                    vcaOpts.fiveYearValueCompounding == null
+                  }
+                  onClick={() => applyCagrPreset('implied')}
+                >
+                  <span className="sizing-cagr-chip-title">Implied (price → 10Y target)</span>
+                  <span className="sizing-cagr-chip-value">{fmtPct(effectiveImpliedCagr(vcaOpts))}</span>
+                </button>
+                <button
+                  type="button"
+                  className={`sizing-cagr-chip ${cagrSource === 'base_case' ? 'active' : ''}`}
+                  disabled={vcaOpts.baseCase == null}
+                  onClick={() => applyCagrPreset('base_case')}
+                >
+                  <span className="sizing-cagr-chip-title">Base case growth</span>
+                  <span className="sizing-cagr-chip-value">{fmtPct(vcaOpts.baseCase)}</span>
+                </button>
+                <button
+                  type="button"
+                  className={`sizing-cagr-chip ${cagrSource === 'ten_y_total' ? 'active' : ''}`}
+                  disabled={vcaOpts.tenYearTotalCagr == null}
+                  onClick={() => applyCagrPreset('ten_y_total')}
+                >
+                  <span className="sizing-cagr-chip-title">10 Y Total CAGR %</span>
+                  <span className="sizing-cagr-chip-value">{fmtPct(vcaOpts.tenYearTotalCagr)}</span>
+                </button>
+                <button
+                  type="button"
+                  className={`sizing-cagr-chip ${cagrSource === 'five_y_vc' ? 'active' : ''}`}
+                  disabled={vcaOpts.fiveYearValueCompounding == null}
+                  onClick={() => applyCagrPreset('five_y_vc')}
+                >
+                  <span className="sizing-cagr-chip-title">5 Y value compounding</span>
+                  <span className="sizing-cagr-chip-value">{fmtPct(vcaOpts.fiveYearValueCompounding)}</span>
+                </button>
               </div>
-              <div className="sizing-company-metrics-row">
-                <dt>
-                  <span className="sizing-inline-tip" tabIndex={0}>
-                    Multiples
-                    <span className="sizing-inline-tip-panel">Multiples: Price in Yr 10 / Current price.</span>
-                  </span>
-                </dt>
-                <dd title="Yr-10 price ÷ current price, equals (1 + CAGR)^10">
-                  {fmt(cagrProjection.multiple, 2)}×
-                </dd>
-              </div>
-            </dl>
-          ) : null}
-          {cagrProjection.multiple != null && cagrProjection.priceYr10 == null && selectedCompanyId && !quotesLoading ? (
-            <p className="sizing-cagr-projection-note">
-              Price in Yr 10 needs a <strong>current price</strong> quote; multiples still reflect compound growth from
-              your CAGR.
+            ) : selectedCompanyId && !gemsLoading ? (
+              <p className="sizing-field-hint">No &quot;Value Compounding Analyst&quot; gem found — enter CAGR manually.</p>
+            ) : null}
+            <input
+              type="number"
+              step="0.5"
+              placeholder="e.g. 15"
+              value={cagr}
+              onChange={e => {
+                setCagr(e.target.value);
+                setCagrSource('custom');
+              }}
+              className="sizing-input"
+            />
+            {cagrProjection.multiple != null ? (
+              <dl className="sizing-cagr-projection">
+                <div className="sizing-company-metrics-row">
+                  <dt>Price in Yr 10</dt>
+                  <dd>
+                    {cagrProjection.priceYr10 != null ? (
+                      fmt(cagrProjection.priceYr10, 2)
+                    ) : quotesLoading ? (
+                      <span className="sizing-metrics-pending">…</span>
+                    ) : (
+                      '—'
+                    )}
+                  </dd>
+                </div>
+                <div className="sizing-company-metrics-row">
+                  <dt>
+                    <span className="sizing-inline-tip" tabIndex={0}>
+                      Multiples
+                      <span className="sizing-inline-tip-panel">Multiples: Price in Yr 10 / Current price.</span>
+                    </span>
+                  </dt>
+                  <dd title="Yr-10 price ÷ current price, equals (1 + CAGR)^10">
+                    {fmt(cagrProjection.multiple, 2)}×
+                  </dd>
+                </div>
+              </dl>
+            ) : null}
+            {cagrProjection.multiple != null && cagrProjection.priceYr10 == null && selectedCompanyId && !quotesLoading ? (
+              <p className="sizing-cagr-projection-note">
+                Price in Yr 10 needs a <strong>current price</strong> quote; multiples still reflect compound growth from
+                your CAGR.
+              </p>
+            ) : null}
+            <p className="sizing-field-hint">
+              Default uses <strong>implied 10Y CAGR</strong> (delayed price vs. 10Y target from the analyst gem). If that
+              is missing, we fall back to other captured metrics in order. Typing in the field switches to{' '}
+              <strong>custom</strong>.
+              {selectedCompanyId && (gemsLoading || companyRunsLoading || quotesLoading) ? (
+                <span className="sizing-hint-loading"> Loading…</span>
+              ) : null}
+              {selectedCompanyId && quotesError ? (
+                <span className="sizing-quote-warning">{quotesError}</span>
+              ) : null}
             </p>
-          ) : null}
-          <p className="sizing-field-hint">
-            Default uses <strong>implied 10Y CAGR</strong> (delayed price vs. 10Y target from the analyst gem). If that
-            is missing, we fall back to other captured metrics in order. Typing in the field switches to{' '}
-            <strong>custom</strong>.
-            {selectedCompanyId && (gemsLoading || companyRunsLoading || quotesLoading) ? (
-              <span className="sizing-hint-loading"> Loading…</span>
-            ) : null}
-            {selectedCompanyId && quotesError ? (
-              <span className="sizing-quote-warning">{quotesError}</span>
-            ) : null}
-          </p>
-        </div>
+          </div>
+        ) : null}
         {selectedCompanyId && probabilityPreview ? (
           <div className="sizing-field sizing-field--tile sizing-field--probability">
             <label>
@@ -782,111 +895,128 @@ export default function PositionSizingPage() {
             </dl>
           </div>
         ) : null}
-        <div className="sizing-field sizing-field--downside">
-          <div className="sizing-downside-card">
-            <span className="sizing-downside-heading">
-              <span className="sizing-inline-tip" tabIndex={0}>
-                Expected downside
-                <span className="sizing-inline-tip-panel">
-                  This is your expected downside from the current price.
-                </span>
-              </span>
-            </span>
-            <div className="sizing-downside-dual">
-              <span className="sizing-downside-slider-wrap">
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  step={0.5}
-                  className="sizing-downside-slider"
-                  disabled={!selectedCompanyId}
-                  value={Math.min(100, Math.max(0, parseFloat(downside) || 0))}
-                  onChange={e => applyDownsidePct(e.target.value)}
-                  aria-label="Expected downside percent"
-                />
-              </span>
-              <span className="sizing-downside-pct-wrap">
-                <span className="sizing-downside-label">
-                  <span className="sizing-inline-tip" tabIndex={0}>
-                    Downside (%)
-                    {delayedPrice != null &&
-                    delayedPrice > 0 &&
-                    downsidePrice !== '' &&
-                    Number.isFinite(parseFloat(downsidePrice)) &&
-                    downside !== '' &&
-                    Number.isFinite(parseFloat(downside)) ? (
-                      <span className="sizing-inline-tip-panel">
-                        Current {fmt(delayedPrice, 2)} {'->'} downside target {fmt(parseFloat(downsidePrice), 2)} (
-                        {fmtPct(parseFloat(downside))} drawdown from current)
-                      </span>
-                    ) : (
-                      <span className="sizing-inline-tip-panel">
-                        Expected drawdown from current price. You can set it directly or by editing Downside Price.
-                      </span>
-                    )}
+        {selectedCompanyId ? (
+          <div className="sizing-field sizing-field--downside">
+            <div className="sizing-downside-card">
+              <span className="sizing-downside-heading">
+                <span className="sizing-inline-tip" tabIndex={0}>
+                  Expected downside
+                  <span className="sizing-inline-tip-panel">
+                    This is your expected downside from the current price.
                   </span>
                 </span>
-                <input
-                  type="number"
-                  step="0.5"
-                  min={0}
-                  max={100}
-                  placeholder="e.g. 20"
-                  value={downside}
-                  onChange={e => applyDownsidePct(e.target.value)}
-                  className="sizing-input"
-                  aria-label="Expected downside percent"
-                />
               </span>
-              <span className="sizing-downside-price-wrap">
-                <span className="sizing-downside-label">Downside Price</span>
-                <input
-                  type="number"
-                  step="0.01"
-                  placeholder={delayedPrice != null && delayedPrice > 0 ? 'target' : '—'}
-                  value={downsidePrice}
-                  onChange={e => applyDownsidePrice(e.target.value)}
-                  className="sizing-input"
-                  disabled={delayedPrice == null || delayedPrice <= 0}
-                  title={
-                    delayedPrice != null && delayedPrice > 0
-                      ? 'Implied price at this drawdown vs. current quote'
-                      : 'Current price unavailable — enter % only or wait for quote'
-                  }
-                  aria-label="Downside price implied from current quote and expected drawdown"
-                />
-              </span>
-            </div>
-            <div className="sizing-downside-derived-list">
-              {downsideToVcaTenYearCagr != null ? (
-                <span className="sizing-downside-derived-metric">
-                  <span className="sizing-inline-tip" tabIndex={0}>
-                    10 Y CAGR % from Downside Price to Target Price:{' '}
-                    <strong>{fmtPct(downsideToVcaTenYearCagr, 2)}</strong>
-                    <span className="sizing-inline-tip-panel">
-                      Annualized 10-year return if your entry is the Downside Price and exit is the Value Compounding
-                      Analyst 10Y target price.
+              <div className="sizing-downside-dual">
+                <span className="sizing-downside-slider-wrap">
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={0.5}
+                    className="sizing-downside-slider"
+                    disabled={!selectedCompanyId}
+                    value={Math.min(100, Math.max(0, parseFloat(downside) || 0))}
+                    onChange={e => applyDownsidePct(e.target.value)}
+                    aria-label="Expected downside percent"
+                  />
+                </span>
+                <span className="sizing-downside-pct-wrap">
+                  <span className="sizing-downside-label">
+                    <span className="sizing-inline-tip" tabIndex={0}>
+                      Downside (%)
+                      {delayedPrice != null &&
+                      delayedPrice > 0 &&
+                      downsidePrice !== '' &&
+                      Number.isFinite(parseFloat(downsidePrice)) &&
+                      downside !== '' &&
+                      Number.isFinite(parseFloat(downside)) ? (
+                        <span className="sizing-inline-tip-panel">
+                          Current {fmt(delayedPrice, 2)} {'->'} downside target {fmt(parseFloat(downsidePrice), 2)} (
+                          {fmtPct(parseFloat(downside))} drawdown from current)
+                        </span>
+                      ) : (
+                        <span className="sizing-inline-tip-panel">
+                          Expected drawdown from current price. You can set it directly or by editing Downside Price.
+                        </span>
+                      )}
                     </span>
                   </span>
+                  <input
+                    type="number"
+                    step="0.5"
+                    min={0}
+                    max={100}
+                    placeholder="e.g. 20"
+                    value={downside}
+                    onChange={e => applyDownsidePct(e.target.value)}
+                    className="sizing-input"
+                    aria-label="Expected downside percent"
+                  />
                 </span>
-              ) : null}
-              {downsideToTargetExpectedReturn != null ? (
-                <span className="sizing-downside-derived-metric sizing-downside-tooltip" tabIndex={0}>
-                  Upside from downside entry to 10 Y target:{' '}
-                  <strong>{fmtPct(downsideToTargetExpectedReturn, 2)}</strong>
-                  <span className="sizing-downside-tooltip-panel">
-                    If you can enter near your downside price and the thesis reaches the Value Compounding Analyst 10Y
-                    target, this is the total upside over the full period.
+                <span className="sizing-downside-price-wrap">
+                  <span className="sizing-downside-label-row">
+                    <span className="sizing-downside-label">Downside Price</span>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost sizing-downside-reset-btn"
+                      onClick={resetDownsidePriceToDefault}
+                      disabled={!defaultDownsidePrice}
+                      title={
+                        defaultDownsidePrice
+                          ? `Reset to default downside price (${defaultDownsidePrice})`
+                          : 'Default downside price unavailable'
+                      }
+                    >
+                      Reset
+                    </button>
                   </span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    placeholder={delayedPrice != null && delayedPrice > 0 ? 'target' : '—'}
+                    value={downsidePrice}
+                    onChange={e => applyDownsidePrice(e.target.value)}
+                    className="sizing-input"
+                    disabled={delayedPrice == null || delayedPrice <= 0}
+                    title={
+                      delayedPrice != null && delayedPrice > 0
+                        ? 'Implied price at this drawdown vs. current quote'
+                        : 'Current price unavailable — enter % only or wait for quote'
+                    }
+                    aria-label="Downside price implied from current quote and expected drawdown"
+                  />
                 </span>
-              ) : null}
+              </div>
+              <div className="sizing-downside-derived-list">
+                {downsideToVcaTenYearCagr != null ? (
+                  <span className="sizing-downside-derived-metric">
+                    <span className="sizing-inline-tip" tabIndex={0}>
+                      10 Y CAGR % from Downside Price to Target Price:{' '}
+                      <strong>{fmtPct(downsideToVcaTenYearCagr, 2)}</strong>
+                      <span className="sizing-inline-tip-panel">
+                        Annualized 10-year return if your entry is the Downside Price and exit is the Value Compounding
+                        Analyst 10Y target price.
+                      </span>
+                    </span>
+                  </span>
+                ) : null}
+                {downsideToTargetExpectedReturn != null ? (
+                  <span className="sizing-downside-derived-metric sizing-downside-tooltip" tabIndex={0}>
+                    Upside from downside entry to 10 Y target:{' '}
+                    <strong>{fmtPct(downsideToTargetExpectedReturn, 2)}</strong>
+                    <span className="sizing-downside-tooltip-panel">
+                      If you can enter near your downside price and the thesis reaches the Value Compounding Analyst 10Y
+                      target, this is the total upside over the full period.
+                    </span>
+                  </span>
+                ) : null}
+              </div>
             </div>
+            {selectedCompanyId && !quotesLoading && (delayedPrice == null || delayedPrice <= 0) ? (
+              <p className="sizing-field-hint">Enter downside as %, or set a target price once a quote loads.</p>
+            ) : null}
           </div>
-          {selectedCompanyId && !quotesLoading && (delayedPrice == null || delayedPrice <= 0) ? (
-            <p className="sizing-field-hint">Enter downside as %, or set a target price once a quote loads.</p>
-          ) : null}
-        </div>
+        ) : null}
       </div>
 
       {showRules && (
@@ -1145,13 +1275,48 @@ export default function PositionSizingPage() {
 
       {/* Results */}
       {!selectedCompany ? (
-        <div className="empty-state light">
+        <div className="empty-state light sizing-empty-state">
           <h3>Select a company</h3>
-          <p>Choose a company above to see its position sizing breakdown.</p>
+          <p>Choose a company above to see its position sizing breakdown and recommended maximum position size.</p>
         </div>
       ) : result ? (
         <div className="sizing-results">
           <h3 className="sizing-company-name">{selectedCompany.companyName} <span className="sizing-ticker">({selectedCompany.ticker})</span></h3>
+          <div className="sizing-stage-toggles" role="group" aria-label="Include stages in position sizing calculation">
+            <span className="sizing-stage-toggles-label">Include in calculation:</span>
+            <label>
+              <input
+                type="checkbox"
+                checked={stageToggles.stage1}
+                onChange={e => setStageToggles(prev => ({ ...prev, stage1: e.target.checked }))}
+              />{' '}
+              Stage 1
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={stageToggles.stage2}
+                onChange={e => setStageToggles(prev => ({ ...prev, stage2: e.target.checked }))}
+              />{' '}
+              Stage 2
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={stageToggles.stage3}
+                onChange={e => setStageToggles(prev => ({ ...prev, stage3: e.target.checked }))}
+              />{' '}
+              Stage 3
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={stageToggles.stage4}
+                onChange={e => setStageToggles(prev => ({ ...prev, stage4: e.target.checked }))}
+              />{' '}
+              Stage 4
+            </label>
+          </div>
 
           {result.warnings.length > 0 && (
             <div className="sizing-warnings">
@@ -1160,7 +1325,7 @@ export default function PositionSizingPage() {
           )}
 
           {/* Stage 1: Metric scores */}
-          <div className="sizing-stage">
+          <div className={`sizing-stage ${stageToggles.stage1 ? '' : 'sizing-stage--disabled'}`}>
             <h4>Stage 1: Weighted Score Metrics → Base Position</h4>
             <p className="stage-description">
               Each weighted score (0–10) maps to a maximum position % using the score brackets you
@@ -1219,7 +1384,7 @@ export default function PositionSizingPage() {
           </div>
 
           {/* Stage 2: CAGR */}
-          <div className="sizing-stage">
+          <div className={`sizing-stage ${stageToggles.stage2 ? '' : 'sizing-stage--disabled'}`}>
             <h4>Stage 2: CAGR Adjustment</h4>
             <p className="stage-description">
               We scale the base position using your expected 10-year CAGR. The calculator applies your
@@ -1240,7 +1405,7 @@ export default function PositionSizingPage() {
           </div>
 
           {/* Stage 3: Probability */}
-          <div className="sizing-stage">
+          <div className={`sizing-stage ${stageToggles.stage3 ? '' : 'sizing-stage--disabled'}`}>
             <h4>Stage 3: Probability of Happening</h4>
             <p className="stage-description">
               Stock Compounder Checklist, Terminal Value, Antifragile, Competitive Advantage, and Lollapalooza Moat
@@ -1291,7 +1456,7 @@ export default function PositionSizingPage() {
           </div>
 
           {/* Stage 4: Downside */}
-          <div className="sizing-stage">
+          <div className={`sizing-stage ${stageToggles.stage4 ? '' : 'sizing-stage--disabled'}`}>
             <h4>Stage 4: Downside Haircut</h4>
             <p className="stage-description">
               Haircut is applied to the post-probability position. Thresholds and haircuts are editable
