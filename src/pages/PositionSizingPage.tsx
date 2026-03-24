@@ -574,6 +574,17 @@ export default function PositionSizingPage() {
     stageToggles,
   ]);
 
+  const stageFailure = useMemo(() => {
+    if (!result) return { stage1: false, stage2: false, stage3: false, stage4: false };
+
+    const stage1 = stageToggles.stage1 && result.basePosition === 0;
+    const stage2 = stageToggles.stage2 && result.basePosition > 0 && result.afterCagr === 0;
+    const stage3 = stageToggles.stage3 && result.afterCagr > 0 && result.afterProbability === 0;
+    const stage4 = stageToggles.stage4 && result.afterProbability > 0 && result.finalPosition === 0;
+
+    return { stage1, stage2, stage3, stage4 };
+  }, [result, stageToggles]);
+
   const exportMarkdown = async () => {
     if (!selectedCompany || !result) return;
     const md = buildPositionSizingMarkdown(selectedCompany, cagr, downside, result);
@@ -1325,8 +1336,13 @@ export default function PositionSizingPage() {
           )}
 
           {/* Stage 1: Metric scores */}
-          <div className={`sizing-stage ${stageToggles.stage1 ? '' : 'sizing-stage--disabled'}`}>
-            <h4>Stage 1: Weighted Score Metrics → Base Position</h4>
+          <div
+            className={`sizing-stage ${stageToggles.stage1 ? '' : 'sizing-stage--disabled'} ${stageFailure.stage1 ? 'sizing-stage--failed' : ''}`}
+          >
+            <h4>
+              Stage 1: Weighted Score Metrics → Base Position
+              {stageFailure.stage1 ? <span className="sizing-stage-fail-tag">Failed: reduced to 0%</span> : null}
+            </h4>
             <p className="stage-description">
               Each weighted score (0–10) maps to a maximum position % using the score brackets you
               can adjust. To stay conservative, the calculator takes the <strong>minimum</strong> of
@@ -1384,8 +1400,13 @@ export default function PositionSizingPage() {
           </div>
 
           {/* Stage 2: CAGR */}
-          <div className={`sizing-stage ${stageToggles.stage2 ? '' : 'sizing-stage--disabled'}`}>
-            <h4>Stage 2: CAGR Adjustment</h4>
+          <div
+            className={`sizing-stage ${stageToggles.stage2 ? '' : 'sizing-stage--disabled'} ${stageFailure.stage2 ? 'sizing-stage--failed' : ''}`}
+          >
+            <h4>
+              Stage 2: CAGR Adjustment
+              {stageFailure.stage2 ? <span className="sizing-stage-fail-tag">Failed: reduced to 0%</span> : null}
+            </h4>
             <p className="stage-description">
               We scale the base position using your expected 10-year CAGR. The calculator applies your
               CAGR brackets (and the configured floor) to produce the <strong>after-CAGR</strong> position.
@@ -1405,8 +1426,13 @@ export default function PositionSizingPage() {
           </div>
 
           {/* Stage 3: Probability */}
-          <div className={`sizing-stage ${stageToggles.stage3 ? '' : 'sizing-stage--disabled'}`}>
-            <h4>Stage 3: Probability of Happening</h4>
+          <div
+            className={`sizing-stage ${stageToggles.stage3 ? '' : 'sizing-stage--disabled'} ${stageFailure.stage3 ? 'sizing-stage--failed' : ''}`}
+          >
+            <h4>
+              Stage 3: Probability of Happening
+              {stageFailure.stage3 ? <span className="sizing-stage-fail-tag">Failed: reduced to 0%</span> : null}
+            </h4>
             <p className="stage-description">
               Stock Compounder Checklist, Terminal Value, Antifragile, Competitive Advantage, and Lollapalooza Moat
               scores plus their average (six values vs. your probability tiers) set a multiplier. Applied after CAGR
@@ -1456,8 +1482,13 @@ export default function PositionSizingPage() {
           </div>
 
           {/* Stage 4: Downside */}
-          <div className={`sizing-stage ${stageToggles.stage4 ? '' : 'sizing-stage--disabled'}`}>
-            <h4>Stage 4: Downside Haircut</h4>
+          <div
+            className={`sizing-stage ${stageToggles.stage4 ? '' : 'sizing-stage--disabled'} ${stageFailure.stage4 ? 'sizing-stage--failed' : ''}`}
+          >
+            <h4>
+              Stage 4: Downside Haircut
+              {stageFailure.stage4 ? <span className="sizing-stage-fail-tag">Failed: reduced to 0%</span> : null}
+            </h4>
             <p className="stage-description">
               Haircut is applied to the post-probability position. Thresholds and haircuts are editable
               under Adjustable Rules.

@@ -3,7 +3,8 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useScoresData } from '../hooks/useScores';
 import { SCORE_TYPES, SCORE_LABELS } from '../types';
 import type { ScoreType, CompanyScores } from '../types';
-import { avgOfScores, rowPassesColumnMins } from '../lib/columnMinFilters';
+import { avgOfScores, rowPassesColumnMins, type ColumnBoundMode } from '../lib/columnMinFilters';
+import { ColumnMinFilterCell } from '../components/ColumnMinFilterCell';
 import { currentRouteWithSearch } from '../lib/navigationState';
 
 type SortKey = 'name' | 'ticker' | ScoreType | 'avg';
@@ -24,14 +25,20 @@ export default function ScoresPage() {
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [search, setSearch] = useState('');
   const [columnMins, setColumnMins] = useState<Record<string, string>>({});
+  const [columnBoundModes, setColumnBoundModes] = useState<Record<string, ColumnBoundMode>>({});
 
   const setMin = (key: string, value: string) => {
     setColumnMins(prev => ({ ...prev, [key]: value }));
   };
 
+  const setBoundMode = (key: string, mode: ColumnBoundMode) => {
+    setColumnBoundModes(prev => ({ ...prev, [key]: mode }));
+  };
+
   const resetFilters = () => {
     setSearch('');
     setColumnMins({});
+    setColumnBoundModes({});
   };
 
   const toggleSort = (key: SortKey) => {
@@ -58,6 +65,7 @@ export default function ScoresPage() {
         () => undefined,
         [],
         () => avgOfScores(c.scores),
+        columnBoundModes,
       ),
     );
 
@@ -72,7 +80,7 @@ export default function ScoresPage() {
     });
 
     return list;
-  }, [companyScores, search, columnMins, sortKey, sortDir]);
+  }, [companyScores, search, columnMins, columnBoundModes, sortKey, sortDir]);
 
   const arrow = (key: SortKey) => (sortKey === key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
 
@@ -103,15 +111,6 @@ export default function ScoresPage() {
       </div>
 
       <div className="scores-toolbar">
-        <div className="search-box">
-          <input
-            type="text"
-            placeholder="Search company or ticker..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="scores-search"
-          />
-        </div>
         <button type="button" className="btn btn-ghost btn-sm scores-reset-filters" onClick={resetFilters}>
           Reset filters
         </button>
@@ -141,41 +140,47 @@ export default function ScoresPage() {
             </tr>
             <tr className="scores-min-filter-row">
               <th className="sticky-action filter-header-cell" aria-hidden />
-              <th className="sticky-after-action filter-header-cell" aria-hidden />
+              <th className="sticky-after-action filter-header-cell filter-header-cell--search">
+                <label htmlFor="scores-company-search" className="visually-hidden">
+                  Search company or ticker
+                </label>
+                <input
+                  id="scores-company-search"
+                  type="search"
+                  placeholder="Search company or ticker…"
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  className="scores-search scores-search--in-table"
+                  onClick={e => e.stopPropagation()}
+                  autoComplete="off"
+                />
+              </th>
               <th className="filter-header-cell" aria-hidden />
               {SCORE_TYPES.map(st => (
                 <th key={st} className="filter-header-cell">
-                  <label className="column-min-label">
-                    <span className="visually-hidden">Min {SCORE_LABELS[st]}</span>
-                    <input
-                      type="number"
-                      step="0.1"
-                      min="0"
-                      max="10"
-                      className="column-min-input"
-                      placeholder="Min"
-                      value={columnMins[`score:${st}`] ?? ''}
-                      onChange={e => setMin(`score:${st}`, e.target.value)}
-                      onClick={e => e.stopPropagation()}
-                    />
-                  </label>
-                </th>
-              ))}
-              <th className="filter-header-cell">
-                <label className="column-min-label">
-                  <span className="visually-hidden">Min average</span>
-                  <input
-                    type="number"
+                  <ColumnMinFilterCell
+                    mode={columnBoundModes[`score:${st}`] ?? 'min'}
+                    onModeChange={m => setBoundMode(`score:${st}`, m)}
+                    value={columnMins[`score:${st}`] ?? ''}
+                    onValueChange={v => setMin(`score:${st}`, v)}
+                    filterAriaLabel={`${SCORE_LABELS[st]} score filter`}
                     step="0.1"
                     min="0"
                     max="10"
-                    className="column-min-input"
-                    placeholder="Min"
-                    value={columnMins.avg ?? ''}
-                    onChange={e => setMin('avg', e.target.value)}
-                    onClick={e => e.stopPropagation()}
                   />
-                </label>
+                </th>
+              ))}
+              <th className="filter-header-cell">
+                <ColumnMinFilterCell
+                  mode={columnBoundModes.avg ?? 'min'}
+                  onModeChange={m => setBoundMode('avg', m)}
+                  value={columnMins.avg ?? ''}
+                  onValueChange={v => setMin('avg', v)}
+                  filterAriaLabel="Average score filter"
+                  step="0.1"
+                  min="0"
+                  max="10"
+                />
               </th>
             </tr>
           </thead>

@@ -17,7 +17,14 @@ import {
   tenYearTargetPriceMetricKey,
   findValueCompoundingAnalystGem,
 } from '../lib/gemMetrics';
-import { avgOfScores, rowPassesColumnMins, parseMinInput } from '../lib/columnMinFilters';
+import {
+  avgOfScores,
+  rowPassesColumnMins,
+  parseMinInput,
+  passesNumericBound,
+  type ColumnBoundMode,
+} from '../lib/columnMinFilters';
+import { ColumnMinFilterCell } from '../components/ColumnMinFilterCell';
 import { useStockQuotes } from '../hooks/useStockQuotes';
 import { normalizeTickerSymbol } from '../lib/stockQuotes';
 import { loadPriceOverrides, persistPriceOverrides } from '../lib/quoteOverrides';
@@ -195,6 +202,7 @@ export default function MetricsComparePage() {
   const [showWeightedScores, setShowWeightedScores] = useState(true);
   const [search, setSearch] = useState('');
   const [columnMins, setColumnMins] = useState<Record<string, string>>({});
+  const [columnBoundModes, setColumnBoundModes] = useState<Record<string, ColumnBoundMode>>({});
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [priceOverrides, setPriceOverrides] = useState<Record<string, number>>(loadPriceOverrides);
@@ -218,9 +226,14 @@ export default function MetricsComparePage() {
     setColumnMins(prev => ({ ...prev, [key]: value }));
   };
 
+  const setBoundMode = (key: string, mode: ColumnBoundMode) => {
+    setColumnBoundModes(prev => ({ ...prev, [key]: mode }));
+  };
+
   const resetFilters = () => {
     setSearch('');
     setColumnMins({});
+    setColumnBoundModes({});
   };
 
   useEffect(() => {
@@ -529,25 +542,50 @@ export default function MetricsComparePage() {
           k => r.metrics[k],
           metricColumns.map(c => c.id),
           () => avgOfScores(r.scores),
+          columnBoundModes,
         )
       ) {
         return false;
       }
       const minP = parseMinInput(columnMins['extra:price'] ?? '');
-      if (minP != null) {
-        if (r.lastPrice == null || r.lastPrice < minP) return false;
+      if (
+        !passesNumericBound(
+          r.lastPrice,
+          minP,
+          columnBoundModes['extra:price'] ?? 'min',
+        )
+      ) {
+        return false;
       }
       const minI = parseMinInput(columnMins['extra:impliedCagr'] ?? '');
-      if (minI != null) {
-        if (r.impliedCagr == null || r.impliedCagr < minI) return false;
+      if (
+        !passesNumericBound(
+          r.impliedCagr,
+          minI,
+          columnBoundModes['extra:impliedCagr'] ?? 'min',
+        )
+      ) {
+        return false;
       }
       const minBitsDownside = parseMinInput(columnMins['extra:bitsDownsideRisk'] ?? '');
-      if (minBitsDownside != null) {
-        if (r.bitsDownsideRisk == null || r.bitsDownsideRisk < minBitsDownside) return false;
+      if (
+        !passesNumericBound(
+          r.bitsDownsideRisk,
+          minBitsDownside,
+          columnBoundModes['extra:bitsDownsideRisk'] ?? 'min',
+        )
+      ) {
+        return false;
       }
       const minBitsToVca = parseMinInput(columnMins['extra:bitsToVcaTenYearCagr'] ?? '');
-      if (minBitsToVca != null) {
-        if (r.bitsToVcaTenYearCagr == null || r.bitsToVcaTenYearCagr < minBitsToVca) return false;
+      if (
+        !passesNumericBound(
+          r.bitsToVcaTenYearCagr,
+          minBitsToVca,
+          columnBoundModes['extra:bitsToVcaTenYearCagr'] ?? 'min',
+        )
+      ) {
+        return false;
       }
       return true;
     });
@@ -580,7 +618,7 @@ export default function MetricsComparePage() {
     });
 
     return list;
-  }, [enrichedRows, search, columnMins, metricColumns, sortKey, sortDir]);
+  }, [enrichedRows, search, columnMins, columnBoundModes, metricColumns, sortKey, sortDir]);
 
   const arrow = (key: SortKey) => (sortKey === key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
 
@@ -671,16 +709,6 @@ export default function MetricsComparePage() {
             />
             Show Single Weighted Score columns
           </label>
-        </div>
-        <div className="search-box">
-          <input
-            type="text"
-            placeholder="Search company or ticker..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="scores-search"
-            disabled={selectedGemIds.length === 0}
-          />
         </div>
         <button
           type="button"
@@ -814,119 +842,100 @@ export default function MetricsComparePage() {
                 </tr>
                 <tr className="scores-min-filter-row">
                   <th className="sticky-action filter-header-cell" aria-hidden />
-                  <th className="sticky-after-action filter-header-cell" aria-hidden />
+                  <th className="sticky-after-action filter-header-cell filter-header-cell--search">
+                    <label htmlFor="metrics-company-search" className="visually-hidden">
+                      Search company or ticker
+                    </label>
+                    <input
+                      id="metrics-company-search"
+                      type="search"
+                      placeholder="Search company or ticker…"
+                      value={search}
+                      onChange={e => setSearch(e.target.value)}
+                      className="scores-search scores-search--in-table"
+                      onClick={e => e.stopPropagation()}
+                      autoComplete="off"
+                    />
+                  </th>
                   <th className="filter-header-cell" aria-hidden />
                   <th className="filter-header-cell">
-                    <label className="column-min-label">
-                      <span className="visually-hidden">Min last price</span>
-                      <input
-                        type="number"
-                        step="any"
-                        className="column-min-input"
-                        placeholder="Min"
-                        value={columnMins['extra:price'] ?? ''}
-                        onChange={e => setMin('extra:price', e.target.value)}
-                        onClick={e => e.stopPropagation()}
-                      />
-                    </label>
+                    <ColumnMinFilterCell
+                      mode={columnBoundModes['extra:price'] ?? 'min'}
+                      onModeChange={m => setBoundMode('extra:price', m)}
+                      value={columnMins['extra:price'] ?? ''}
+                      onValueChange={v => setMin('extra:price', v)}
+                      filterAriaLabel="Last price filter"
+                    />
                   </th>
                   <th className="filter-header-cell">
-                    <label className="column-min-label">
-                        <span className="visually-hidden">Min implied 10Y CAGR from VCA</span>
-                      <input
-                        type="number"
-                        step="any"
-                        className="column-min-input"
-                        placeholder="Min"
-                        value={columnMins['extra:impliedCagr'] ?? ''}
-                        onChange={e => setMin('extra:impliedCagr', e.target.value)}
-                        onClick={e => e.stopPropagation()}
-                      />
-                    </label>
+                    <ColumnMinFilterCell
+                      mode={columnBoundModes['extra:impliedCagr'] ?? 'min'}
+                      onModeChange={m => setBoundMode('extra:impliedCagr', m)}
+                      value={columnMins['extra:impliedCagr'] ?? ''}
+                      onValueChange={v => setMin('extra:impliedCagr', v)}
+                      filterAriaLabel="Implied 10Y CAGR filter"
+                    />
                   </th>
                   {showBitsDerived && (
                     <th className="filter-header-cell">
-                      <label className="column-min-label">
-                        <span className="visually-hidden">Min downside risk from BITS</span>
-                        <input
-                          type="number"
-                          step="any"
-                          className="column-min-input"
-                          placeholder="Min"
-                          value={columnMins['extra:bitsDownsideRisk'] ?? ''}
-                          onChange={e => setMin('extra:bitsDownsideRisk', e.target.value)}
-                          onClick={e => e.stopPropagation()}
-                        />
-                      </label>
+                      <ColumnMinFilterCell
+                        mode={columnBoundModes['extra:bitsDownsideRisk'] ?? 'min'}
+                        onModeChange={m => setBoundMode('extra:bitsDownsideRisk', m)}
+                        value={columnMins['extra:bitsDownsideRisk'] ?? ''}
+                        onValueChange={v => setMin('extra:bitsDownsideRisk', v)}
+                        filterAriaLabel="Downside risk filter"
+                      />
                     </th>
                   )}
                   {showBitsDerived && (
                     <th className="filter-header-cell">
-                      <label className="column-min-label">
-                        <span className="visually-hidden">Min 10Y CAGR from BITS to VCA</span>
-                        <input
-                          type="number"
-                          step="any"
-                          className="column-min-input"
-                          placeholder="Min"
-                          value={columnMins['extra:bitsToVcaTenYearCagr'] ?? ''}
-                          onChange={e => setMin('extra:bitsToVcaTenYearCagr', e.target.value)}
-                          onClick={e => e.stopPropagation()}
-                        />
-                      </label>
+                      <ColumnMinFilterCell
+                        mode={columnBoundModes['extra:bitsToVcaTenYearCagr'] ?? 'min'}
+                        onModeChange={m => setBoundMode('extra:bitsToVcaTenYearCagr', m)}
+                        value={columnMins['extra:bitsToVcaTenYearCagr'] ?? ''}
+                        onValueChange={v => setMin('extra:bitsToVcaTenYearCagr', v)}
+                        filterAriaLabel="10Y CAGR BITS to VCA filter"
+                      />
                     </th>
                   )}
                   {metricColumns.map(col => (
                     <th key={col.id} className="filter-header-cell">
-                      <label className="column-min-label">
-                        <span className="visually-hidden">Min {col.label}</span>
-                        <input
-                          type="number"
-                          step="any"
-                          className="column-min-input"
-                          placeholder="Min"
-                          value={columnMins[`metric:${col.id}`] ?? ''}
-                          onChange={e => setMin(`metric:${col.id}`, e.target.value)}
-                          onClick={e => e.stopPropagation()}
-                        />
-                      </label>
+                      <ColumnMinFilterCell
+                        mode={columnBoundModes[`metric:${col.id}`] ?? 'min'}
+                        onModeChange={m => setBoundMode(`metric:${col.id}`, m)}
+                        value={columnMins[`metric:${col.id}`] ?? ''}
+                        onValueChange={v => setMin(`metric:${col.id}`, v)}
+                        filterAriaLabel={`${col.label} filter`}
+                      />
                     </th>
                   ))}
                   {showWeightedScores &&
                     SCORE_TYPES.map(st => (
                       <th key={st} className="filter-header-cell">
-                        <label className="column-min-label">
-                          <span className="visually-hidden">Min {SCORE_LABELS[st]}</span>
-                          <input
-                            type="number"
-                            step="0.1"
-                            min="0"
-                            max="10"
-                            className="column-min-input"
-                            placeholder="Min"
-                            value={columnMins[`score:${st}`] ?? ''}
-                            onChange={e => setMin(`score:${st}`, e.target.value)}
-                            onClick={e => e.stopPropagation()}
-                          />
-                        </label>
+                        <ColumnMinFilterCell
+                          mode={columnBoundModes[`score:${st}`] ?? 'min'}
+                          onModeChange={m => setBoundMode(`score:${st}`, m)}
+                          value={columnMins[`score:${st}`] ?? ''}
+                          onValueChange={v => setMin(`score:${st}`, v)}
+                          filterAriaLabel={`${SCORE_LABELS[st]} score filter`}
+                          step="0.1"
+                          min="0"
+                          max="10"
+                        />
                       </th>
                     ))}
                   {showWeightedScores && (
                     <th className="filter-header-cell">
-                      <label className="column-min-label">
-                        <span className="visually-hidden">Min average</span>
-                        <input
-                          type="number"
-                          step="0.1"
-                          min="0"
-                          max="10"
-                          className="column-min-input"
-                          placeholder="Min"
-                          value={columnMins.avg ?? ''}
-                          onChange={e => setMin('avg', e.target.value)}
-                          onClick={e => e.stopPropagation()}
-                        />
-                      </label>
+                      <ColumnMinFilterCell
+                        mode={columnBoundModes.avg ?? 'min'}
+                        onModeChange={m => setBoundMode('avg', m)}
+                        value={columnMins.avg ?? ''}
+                        onValueChange={v => setMin('avg', v)}
+                        filterAriaLabel="Average score filter"
+                        step="0.1"
+                        min="0"
+                        max="10"
+                      />
                     </th>
                   )}
                 </tr>

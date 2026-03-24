@@ -1,6 +1,9 @@
 import { SCORE_TYPES } from '../types';
 import type { ScoreType } from '../types';
 
+/** 'min' = keep rows with value ≥ threshold; 'max' = keep rows with value ≤ threshold. */
+export type ColumnBoundMode = 'min' | 'max';
+
 /** Parse optional min from user input; empty = no filter. */
 export function parseMinInput(raw: string): number | null {
   const t = raw.trim();
@@ -10,36 +13,54 @@ export function parseMinInput(raw: string): number | null {
   return n;
 }
 
+export function boundModeForKey(modes: Record<string, ColumnBoundMode> | undefined, key: string): ColumnBoundMode {
+  return modes?.[key] ?? 'min';
+}
+
+/** Row passes the numeric bound when a threshold is set; missing values fail the filter. */
+export function passesNumericBound(
+  value: number | null | undefined,
+  threshold: number | null,
+  mode: ColumnBoundMode,
+): boolean {
+  if (threshold == null) return true;
+  if (value == null || Number.isNaN(value)) return false;
+  return mode === 'min' ? value >= threshold : value <= threshold;
+}
+
 export function avgOfScores(scores: Partial<Record<ScoreType, number>>): number | null {
   const vals = SCORE_TYPES.map(st => scores[st]).filter((v): v is number => v != null);
   if (vals.length === 0) return null;
   return vals.reduce((a, b) => a + b, 0) / vals.length;
 }
 
-/** Row passes if every set min is satisfied (score >= min, metric >= min, avg >= min). Missing values fail when a min is set. */
+/** Row passes if every set threshold is satisfied per-column mode (min = ≥, max = ≤). Missing values fail when a bound is set. */
 export function rowPassesColumnMins(
   mins: Record<string, string>,
   getScore: (st: ScoreType) => number | undefined,
   getMetric: (key: string) => number | undefined,
   metricKeys: string[],
   getAvg: () => number | null,
+  modes?: Record<string, ColumnBoundMode>,
 ): boolean {
   for (const k of metricKeys) {
-    const m = parseMinInput(mins[`metric:${k}`] ?? '');
-    if (m == null) continue;
+    const key = `metric:${k}`;
+    const t = parseMinInput(mins[key] ?? '');
+    if (t == null) continue;
     const v = getMetric(k);
-    if (v == null || v < m) return false;
+    if (!passesNumericBound(v ?? null, t, boundModeForKey(modes, key))) return false;
   }
   for (const st of SCORE_TYPES) {
-    const min = parseMinInput(mins[`score:${st}`] ?? '');
-    if (min == null) continue;
+    const key = `score:${st}`;
+    const t = parseMinInput(mins[key] ?? '');
+    if (t == null) continue;
     const v = getScore(st);
-    if (v == null || v < min) return false;
+    if (!passesNumericBound(v ?? null, t, boundModeForKey(modes, key))) return false;
   }
-  const minAvg = parseMinInput(mins.avg ?? '');
-  if (minAvg != null) {
+  const tAvg = parseMinInput(mins.avg ?? '');
+  if (tAvg != null) {
     const a = getAvg();
-    if (a == null || a < minAvg) return false;
+    if (!passesNumericBound(a, tAvg, boundModeForKey(modes, 'avg'))) return false;
   }
   return true;
 }
