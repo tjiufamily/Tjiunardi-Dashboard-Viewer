@@ -1128,9 +1128,9 @@ export default function PositionSizingPage() {
             </div>
             <p className="rules-hint">
               Uses Stock Compounder Checklist, Terminal Value, Antifragile, Competitive Advantage, and Lollapalooza Moat
-              plus their average (six values). Tiers are evaluated from the highest threshold first; all six must be{' '}
-              <strong>&gt;</strong> the tier&apos;s threshold. If no tier matches and it is not the &quot;all below&quot;
-              case, multiplier is 0 (conservative).
+              plus their average (six values total). Tiers are evaluated from the highest threshold first; all six must be{' '}
+              <strong>&gt;=</strong> the tier&apos;s threshold. If no tier matches and it is not the &quot;all below&quot;
+              multiplier is 0 (conservative).
             </p>
             <p className="rules-hint">
               If all six &lt;{' '}
@@ -1146,7 +1146,7 @@ export default function PositionSizingPage() {
             <table className="rules-table">
               <thead>
                 <tr>
-                  <th>If all six &gt;</th>
+                  <th>If all six &gt;=</th>
                   <th>Multiplier</th>
                   <th></th>
                 </tr>
@@ -1435,7 +1435,8 @@ export default function PositionSizingPage() {
             </h4>
             <p className="stage-description">
               Stock Compounder Checklist, Terminal Value, Antifragile, Competitive Advantage, and Lollapalooza Moat
-              scores plus their average (six values vs. your probability tiers) set a multiplier. Applied after CAGR
+              scores contribute to the probability stage. The displayed <strong>Avg (5)</strong> is compared against your
+              probability tiers alongside the individual metrics (six values total) to set the multiplier. Applied after CAGR
               and before downside.
             </p>
             <table className="sizing-breakdown-table sizing-prob-mini-table">

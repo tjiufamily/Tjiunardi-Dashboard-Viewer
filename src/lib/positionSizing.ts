@@ -116,16 +116,18 @@ export function computeProbabilityMultiplier(
   const averageMetrics = vals.reduce((a, b) => a + b, 0) / 5;
   const six = [...vals, averageMetrics];
 
-  const allGT = (t: number) => six.every(s => s > t);
+  // Probability tiers apply conservatively: all six inputs (5 metrics + their average) must meet the tier.
+  // Use inclusive comparison so exact boundary values (e.g. exactly 9.0) don't fall into the lower tier.
+  const allGE = (t: number) => six.every(s => s >= t);
   const allLT = (t: number) => six.every(s => s < t);
 
   for (const tier of tiers) {
-    if (allGT(tier.minAbove)) {
+    if (allGE(tier.minAbove)) {
       return {
         details,
         averageMetrics,
         multiplier: tier.multiplier,
-        note: `All six (5 metrics + avg) > ${tier.minAbove} → ×${tier.multiplier}`,
+        note: `All six (5 metrics + avg) >= ${tier.minAbove} → ×${tier.multiplier}`,
         skipped: false,
       };
     }
