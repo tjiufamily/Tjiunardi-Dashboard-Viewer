@@ -103,13 +103,20 @@ export function useStockQuotes(infos: TickerInfo[]) {
     let cancelled = false;
     const isForced = forceRefreshNextRef.current;
     forceRefreshNextRef.current = false;
-    const missingToFetch = isForced
-      ? list
-      : list.filter(t => {
-          const p = cached.get(t);
-          return p == null || p <= 0;
-        });
-    if (missingToFetch.length === 0) {
+    const missingToFetch = list.filter(t => {
+      const p = cached.get(t);
+      return p == null || p <= 0;
+    });
+    const fetchQueue = isForced
+      ? [
+          ...missingToFetch,
+          ...list.filter(t => {
+            const p = cached.get(t);
+            return p != null && p > 0;
+          }),
+        ]
+      : missingToFetch;
+    if (fetchQueue.length === 0) {
       setLoading(false);
       setError(null);
       setFetchProgress({ phase: 'idle', current: 0, total: 0 });
@@ -117,7 +124,7 @@ export function useStockQuotes(infos: TickerInfo[]) {
     }
     setLoading(true);
     setError(null);
-    setFetchProgress({ phase: 'web', current: 0, total: missingToFetch.length });
+    setFetchProgress({ phase: 'web', current: 0, total: fetchQueue.length });
 
     const token = import.meta.env.VITE_FINNHUB_API_KEY as string | undefined;
     const geminiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
@@ -126,11 +133,11 @@ export function useStockQuotes(infos: TickerInfo[]) {
       let anyLivePrice = false;
       const webMissed: string[] = [];
 
-      for (let i = 0; i < missingToFetch.length; i++) {
-        const t = missingToFetch[i];
+      for (let i = 0; i < fetchQueue.length; i++) {
+        const t = fetchQueue[i];
         if (cancelled) return;
 
-        setFetchProgress({ phase: 'web', current: i + 1, total: missingToFetch.length });
+        setFetchProgress({ phase: 'web', current: i + 1, total: fetchQueue.length });
 
         let r: Awaited<ReturnType<typeof fetchDelayedQuoteWithoutGemini>> | undefined;
         try {
@@ -155,7 +162,7 @@ export function useStockQuotes(infos: TickerInfo[]) {
 
         if (cancelled) return;
 
-        if (i < missingToFetch.length - 1) {
+        if (i < fetchQueue.length - 1) {
           if (token) await sleep(FINNHUB_GAP_MS);
           else if (geminiKey) await sleep(GEMINI_GAP_MS);
         }

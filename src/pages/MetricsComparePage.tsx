@@ -428,7 +428,7 @@ export default function MetricsComparePage() {
   const [refreshClock, setRefreshClock] = useState(() => Date.now());
   useEffect(() => {
     if (!lastRefreshedAt) return;
-    const id = window.setInterval(() => setRefreshClock(Date.now()), 30_000);
+    const id = window.setInterval(() => setRefreshClock(Date.now()), 3_600_000);
     return () => window.clearInterval(id);
   }, [lastRefreshedAt]);
 
@@ -746,9 +746,18 @@ export default function MetricsComparePage() {
         <button
           type="button"
           className="btn btn-ghost btn-sm"
+          onClick={() => refreshQuotes(false)}
+          disabled={selectedGemIds.length === 0 || rowCount === 0 || quotesLoading}
+          title="Fetch only rows with empty prices (priority first)"
+        >
+          {quotesLoading ? 'Fetching empty prices…' : 'Fetch empty prices'}
+        </button>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
           onClick={() => refreshQuotes(true)}
           disabled={selectedGemIds.length === 0 || rowCount === 0 || quotesLoading}
-          title="Manually re-fetch delayed prices for all rows"
+          title="Re-fetch all prices (empty rows are fetched first)"
         >
           {quotesLoading ? 'Refreshing prices…' : 'Refresh prices'}
         </button>
