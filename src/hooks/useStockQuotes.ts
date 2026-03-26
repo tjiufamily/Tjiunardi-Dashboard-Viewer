@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   fetchDelayedQuoteWithoutGemini,
   listingSymbolVariants,
@@ -11,6 +11,7 @@ import { loadQuoteCache, upsertQuoteCache } from '../lib/quoteCache';
 const FINNHUB_GAP_MS = 1100;
 const GEMINI_GAP_MS = 600;
 const GEMINI_EXTRA_GAP_MS = 500;
+const QUOTE_LAST_REFRESHED_KEY = 'tjiunardi.dashboard.quoteCache.lastRefreshedAt.v1';
 
 export type QuoteFetchPhase = 'idle' | 'web' | 'gemini';
 export type QuoteFetchProgress = { phase: QuoteFetchPhase; current: number; total: number };
@@ -47,6 +48,22 @@ export function useStockQuotes(infos: TickerInfo[]) {
     current: 0,
     total: 0,
   });
+  const [lastRefreshedAt, setLastRefreshedAt] = useState<number | null>(() => {
+    try {
+      const raw = localStorage.getItem(QUOTE_LAST_REFRESHED_KEY);
+      if (!raw) return null;
+      const n = Number(raw);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    } catch {
+      return null;
+    }
+  });
+  const [refreshSeq, setRefreshSeq] = useState(0);
+  const forceRefreshNextRef = useRef(false);
+  const refresh = useCallback((force = false) => {
+    if (force) forceRefreshNextRef.current = true;
+    setRefreshSeq(v => v + 1);
+  }, []);
 
   const quotes = useMemo(() => {
     if (!key) return new Map<string, number | null>();
@@ -84,9 +101,23 @@ export function useStockQuotes(infos: TickerInfo[]) {
     });
 
     let cancelled = false;
+    const isForced = forceRefreshNextRef.current;
+    forceRefreshNextRef.current = false;
+    const missingToFetch = isForced
+      ? list
+      : list.filter(t => {
+          const p = cached.get(t);
+          return p == null || p <= 0;
+        });
+    if (missingToFetch.length === 0) {
+      setLoading(false);
+      setError(null);
+      setFetchProgress({ phase: 'idle', current: 0, total: 0 });
+      return;
+    }
     setLoading(true);
     setError(null);
-    setFetchProgress({ phase: 'web', current: 0, total: list.length });
+    setFetchProgress({ phase: 'web', current: 0, total: missingToFetch.length });
 
     const token = import.meta.env.VITE_FINNHUB_API_KEY as string | undefined;
     const geminiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
@@ -95,11 +126,11 @@ export function useStockQuotes(infos: TickerInfo[]) {
       let anyLivePrice = false;
       const webMissed: string[] = [];
 
-      for (let i = 0; i < list.length; i++) {
-        const t = list[i];
+      for (let i = 0; i < missingToFetch.length; i++) {
+        const t = missingToFetch[i];
         if (cancelled) return;
 
-        setFetchProgress({ phase: 'web', current: i + 1, total: list.length });
+        setFetchProgress({ phase: 'web', current: i + 1, total: missingToFetch.length });
 
         let r: Awaited<ReturnType<typeof fetchDelayedQuoteWithoutGemini>> | undefined;
         try {
@@ -124,7 +155,7 @@ export function useStockQuotes(infos: TickerInfo[]) {
 
         if (cancelled) return;
 
-        if (i < list.length - 1) {
+        if (i < missingToFetch.length - 1) {
           if (token) await sleep(FINNHUB_GAP_MS);
           else if (geminiKey) await sleep(GEMINI_GAP_MS);
         }
@@ -190,6 +221,13 @@ export function useStockQuotes(infos: TickerInfo[]) {
         );
       } else {
         setError(null);
+        const now = Date.now();
+        setLastRefreshedAt(now);
+        try {
+          localStorage.setItem(QUOTE_LAST_REFRESHED_KEY, String(now));
+        } catch {
+          // ignore storage failures
+        }
       }
     })();
 
@@ -198,7 +236,7 @@ export function useStockQuotes(infos: TickerInfo[]) {
     };
     // nameOf is derived from entries which is derived from infos — key already captures ticker identity
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [key, refreshSeq]);
 
-  return { quotes, loading, error, fetchProgress };
+  return { quotes, loading, error, fetchProgress, refresh, lastRefreshedAt };
 }

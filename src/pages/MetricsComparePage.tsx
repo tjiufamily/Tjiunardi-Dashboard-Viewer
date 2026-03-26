@@ -183,6 +183,18 @@ type EnrichedRow = Row & {
   bitsToVcaTenYearCagr: number | null;
 };
 
+function fmtLastRefreshed(lastRefreshedAt: number, nowMs: number): string {
+  const ageSec = Math.max(0, Math.floor((nowMs - lastRefreshedAt) / 1000));
+  let relative: string;
+  if (ageSec < 10) relative = 'just now';
+  else if (ageSec < 60) relative = `${ageSec}s ago`;
+  else if (ageSec < 3600) relative = `${Math.floor(ageSec / 60)}m ago`;
+  else if (ageSec < 86400) relative = `${Math.floor(ageSec / 3600)}h ago`;
+  else relative = `${Math.floor(ageSec / 86400)}d ago`;
+  const absolute = new Date(lastRefreshedAt).toLocaleString();
+  return `${relative} (${absolute})`;
+}
+
 export default function MetricsComparePage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -405,7 +417,20 @@ export default function MetricsComparePage() {
     () => rows.map(r => ({ ticker: r.quoteSymbol, name: r.companyName })),
     [rows],
   );
-  const { quotes, loading: quotesLoading, error: quotesError, fetchProgress } = useStockQuotes(rowTickerInfos);
+  const {
+    quotes,
+    loading: quotesLoading,
+    error: quotesError,
+    fetchProgress,
+    refresh: refreshQuotes,
+    lastRefreshedAt,
+  } = useStockQuotes(rowTickerInfos);
+  const [refreshClock, setRefreshClock] = useState(() => Date.now());
+  useEffect(() => {
+    if (!lastRefreshedAt) return;
+    const id = window.setInterval(() => setRefreshClock(Date.now()), 30_000);
+    return () => window.clearInterval(id);
+  }, [lastRefreshedAt]);
 
   const vcaRuns = useMemo(
     () => (vcaGem ? allRuns.filter(r => r.gem_id === vcaGem.id) : []),
@@ -718,6 +743,20 @@ export default function MetricsComparePage() {
         >
           Reset filters
         </button>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={() => refreshQuotes(true)}
+          disabled={selectedGemIds.length === 0 || rowCount === 0 || quotesLoading}
+          title="Manually re-fetch delayed prices for all rows"
+        >
+          {quotesLoading ? 'Refreshing prices…' : 'Refresh prices'}
+        </button>
+        {lastRefreshedAt ? (
+          <span className="metrics-quotes-status metrics-quotes-status--row">
+            Last refreshed: {fmtLastRefreshed(lastRefreshedAt, refreshClock)}
+          </span>
+        ) : null}
         {selectedGemIds.length > 0 && rows.length > 0 ? (
           <span
             className={`metrics-quotes-status metrics-quotes-status--row${quotesError && !quotesLoading ? ' metrics-quotes-status--error' : ''}`}

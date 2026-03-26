@@ -435,7 +435,7 @@ export default function PositionSizingPage() {
     if (cagrParam !== null && cagrParam !== '') return;
     if (!selectedCompanyId || gemsLoading) return;
     if (companyRunsLoading) return;
-    if (quotesLoading) return;
+    if (quotesLoading && (delayedPrice == null || delayedPrice <= 0)) return;
     if (cagrSource === 'custom') return;
 
     let v: number | null = cagrValueForSource(cagrSource, vcaOpts);
@@ -452,6 +452,7 @@ export default function PositionSizingPage() {
     gemsLoading,
     companyRunsLoading,
     quotesLoading,
+    delayedPrice,
     cagrSource,
     vcaOpts,
     searchParams,
