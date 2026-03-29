@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import type { ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useScoresData } from '../hooks/useScores';
 import { useGems, useCompanyRuns } from '../hooks/useData';
@@ -19,6 +20,7 @@ import {
   DEFAULT_AVG_SUPERIOR_THRESHOLD,
   DEFAULT_AVG_SUPERIOR_MAX_PCT,
   PROBABILITY_SCORE_TYPES,
+  computeStagedTranchePlan,
 } from '../lib/positionSizing';
 import type {
   ScoreThreshold,
@@ -51,7 +53,41 @@ const LS_SIZING_PROBABILITY = 'tjiunardi.dashboard.sizing.probability.v1';
 const LS_SIZING_STAGE_TOGGLES = 'tjiunardi.dashboard.sizing.stageToggles.v1';
 const LS_SIZING_FORM = 'tjiunardi.dashboard.sizing.form.v1';
 
-function fmt(v: number | null | undefined, decimals = 1): string {
+/** Hover tips (formulas) — reused on header and body cells for each column. */
+const STAGED_COL_TIP = {
+  drawdown:
+    'Tip: Drawdown from scale-in price P down to downside D (not from the live quote). Formula: (P − D) ÷ P = d. Ladder: 30%, 20%, 10%, 0%.',
+  scaleInPrice:
+    'Tip: Where this tranche buys. Formula: P = D ÷ (1 − d) with D = Downside price (Expected downside), d = column 1 as decimal. — if D invalid.',
+  addUnits:
+    'Tip: Anti-martingale weights 1–4 (sum 10). Formula: Stage 3 share = units ÷ 10. More units on lower rows = more $ at lower prices.',
+  pctStage3:
+    'Tip: Slice of Stage 3 cap. Formula: (units ÷ 10) × 100% → 10%, 20%, 30%, 40%.',
+  portfolioPct:
+    'Tip: Portfolio % this tranche. Formula: (Stage 3 %) × (units ÷ 10). Four rows sum to Stage 3 %.',
+} as const;
+
+/** Native `title` tooltips — custom CSS panels are clipped by the table scroll container. */
+function StagedColHead({ label, tip }: { label: string; tip: string }) {
+  return (
+    <span className="sizing-staged-native-tip" title={tip} tabIndex={0}>
+      {label}
+    </span>
+  );
+}
+
+function StagedTd({ tip, className, children }: { tip: string; className?: string; children: ReactNode }) {
+  return (
+    <td className={className}>
+      <span className="sizing-staged-native-tip" title={tip} tabIndex={0}>
+        {children}
+      </span>
+    </td>
+  );
+}
+
+/** Max 2 decimal places for displayed numbers on this page (unless overridden). */
+function fmt(v: number | null | undefined, decimals = 2): string {
   if (v == null) return '—';
   return v.toFixed(decimals);
 }
@@ -629,9 +665,21 @@ export default function PositionSizingPage() {
     return { stage1, stage2, stage3, stage4 };
   }, [result, stageToggles]);
 
+  const downsideAnchorPrice = useMemo(() => {
+    const v = parseFloat(downsidePrice);
+    return downsidePrice.trim() !== '' && Number.isFinite(v) && v > 0 ? v : null;
+  }, [downsidePrice]);
+
+  const stagedTranchePlan = useMemo(() => {
+    if (!result) return null;
+    return computeStagedTranchePlan(result.afterProbability, downsideAnchorPrice);
+  }, [result, downsideAnchorPrice]);
+
   const exportMarkdown = async () => {
     if (!selectedCompany || !result) return;
-    const md = buildPositionSizingMarkdown(selectedCompany, cagr, downside, result);
+    const md = buildPositionSizingMarkdown(selectedCompany, cagr, downside, result, {
+      downsideAnchorPrice,
+    });
     const name = positionSizingReportFilename(selectedCompany.ticker, selectedCompany.companyName, 'md');
     await saveTextFileWithPicker(name, md, 'text/markdown;charset=utf-8', 'md');
   };
@@ -643,6 +691,7 @@ export default function PositionSizingPage() {
       company: { name: selectedCompany.companyName, ticker: selectedCompany.ticker },
       inputs: { cagrPercent: cagr, downsidePercent: downside },
       result,
+      stagedTranchePlan: computeStagedTranchePlan(result.afterProbability, downsideAnchorPrice),
     });
     const name = positionSizingReportFilename(selectedCompany.ticker, selectedCompany.companyName, 'json');
     await saveTextFileWithPicker(name, json, 'application/json;charset=utf-8', 'json');
@@ -1329,7 +1378,7 @@ export default function PositionSizingPage() {
                         title="0 = wait, 1 = full position"
                       />
                       <span className="rules-haircut-hint">
-                        {b.haircut === 0 ? ' (wait)' : ` (${fmt(b.haircut * 100, 0)}% of post-prob.)`}
+                        {b.haircut === 0 ? ' (wait)' : ` (${fmt(b.haircut * 100, 2)}% of post-prob.)`}
                       </span>
                     </td>
                     <td>
@@ -1589,15 +1638,144 @@ export default function PositionSizingPage() {
             </div>
           </div>
 
-          {/* Final */}
-          <div className={`sizing-final ${result.finalPosition === 0 ? 'sizing-final--zero' : ''}`}>
-            <div className="sizing-final-label">Recommended Maximum Full Position Size</div>
+          {/* Single entry (Stage 4) — directly after Stage 4 */}
+          <div
+            className={`sizing-final sizing-final--current sizing-final--solo ${result.finalPosition === 0 ? 'sizing-final--zero' : ''}`}
+            role="region"
+            aria-label="Recommended position if you deploy at today’s price with your expected downside"
+          >
+            <span className="sizing-final-badge" aria-hidden="true">
+              Single entry
+            </span>
+            <div className="sizing-final-label">One shot at today’s price + your expected downside (Stage 4)</div>
             <div className="sizing-final-value">
               {result.finalPosition === 0
                 ? 'Do not invest / Wait for better entry'
                 : `${fmt(result.finalPosition, 2)}% of portfolio`}
             </div>
+            <p className="sizing-final-hint">
+              Uses your downside % and haircut rules above — not the anti-martingale ladder below.
+            </p>
           </div>
+
+          {/* Anti-martingale ladder */}
+          {stagedTranchePlan ? (
+            <div className="sizing-staged-tranche">
+              <h4 className="sizing-staged-tranche-title">Anti-martingale ladder (add more at lower prices)</h4>
+              <p className="sizing-staged-tranche-intro">
+                This is an <strong>anti-martingale</strong> style plan: you allocate <strong>more</strong> of your Stage
+                3 line when the price is <strong>lower</strong>, where risk often feels more acceptable for a{' '}
+                <strong>high-quality</strong> name. Your <strong>Downside price</strong> (Expected downside above) is the
+                floor <em>D</em>. Each row’s scale-in price is{' '}
+                <code className="sizing-staged-formula">P = D ÷ (1 − d)</code> with <em>d</em> = drawdown as a decimal
+                (30% → 0.30). The drawdown in column 1 is from <em>P</em> down to <em>D</em> —{' '}
+                <strong>not</strong> from the live quote. Units 1+2+3+4 sum to 10, so each row is (units ÷ 10) of your
+                Stage 3 cap ({fmt(result.afterProbability, 2)}%); all four rows together use{' '}
+                <strong>100%</strong> of that cap.
+              </p>
+              <p className="sizing-staged-tranche-intro sizing-staged-tranche-intro--friendly">
+                Picture a simple ladder: you don’t put the whole Stage 3 position on at one price. You add a little
+                higher up, and add more as the price gets closer to your downside floor—because for a name you trust,
+                cheaper often feels like a better deal. The table is just a clear way to split that story into
+                numbers—nothing more complicated than “more size when the price is cheaper.”
+              </p>
+              <div className="sizing-staged-table-wrap">
+                <table className="sizing-breakdown-table sizing-staged-tranche-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">
+                        <StagedColHead
+                          label="Drawdown (scale-in → downside price)"
+                          tip={STAGED_COL_TIP.drawdown}
+                        />
+                      </th>
+                      <th scope="col" className="num">
+                        <StagedColHead label="Scale-in price" tip={STAGED_COL_TIP.scaleInPrice} />
+                      </th>
+                      <th scope="col" className="num">
+                        <StagedColHead label="Add units" tip={STAGED_COL_TIP.addUnits} />
+                      </th>
+                      <th scope="col" className="num">
+                        <StagedColHead label="% of Stage 3 cap" tip={STAGED_COL_TIP.pctStage3} />
+                      </th>
+                      <th scope="col" className="num">
+                        <StagedColHead
+                          label="Position sizing (portfolio %)"
+                          tip={STAGED_COL_TIP.portfolioPct}
+                        />
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stagedTranchePlan.rows.map(r => (
+                      <tr key={r.addUnits}>
+                        <StagedTd tip={STAGED_COL_TIP.drawdown}>
+                          {r.downsidePct === 0 ? (
+                            <>
+                              0%{' '}
+                              <span className="sizing-staged-dprice-note">(downside price)</span>
+                            </>
+                          ) : (
+                            <>{fmt(r.downsidePct, 0)}%</>
+                          )}
+                        </StagedTd>
+                        <StagedTd tip={STAGED_COL_TIP.scaleInPrice} className="num">
+                          {r.price != null ? fmt(r.price, 2) : '—'}
+                        </StagedTd>
+                        <StagedTd tip={STAGED_COL_TIP.addUnits} className="num">
+                          {r.addUnits}
+                        </StagedTd>
+                        <StagedTd tip={STAGED_COL_TIP.pctStage3} className="num">
+                          {fmt(r.pctOfStage3Cap, 0)}%
+                        </StagedTd>
+                        <StagedTd tip={STAGED_COL_TIP.portfolioPct} className="num">
+                          {fmt(r.portfolioAllocationPct, 2)}%
+                        </StagedTd>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="sizing-staged-total-row">
+                      <td colSpan={4}>
+                        <strong>Total (if all tranches filled)</strong>
+                      </td>
+                      <td className="num">
+                        <strong>{fmt(stagedTranchePlan.totalPositionRecommendationPct, 2)}%</strong>
+                        {stagedTranchePlan.totalVsStage3Ratio != null ? (
+                          <span className="sizing-staged-total-note">
+                            {' '}
+                            ({fmt(stagedTranchePlan.totalVsStage3Ratio * 100, 0)}% of Stage 3 cap)
+                          </span>
+                        ) : null}
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          ) : null}
+
+          {/* Ladder total — below table */}
+          {stagedTranchePlan ? (
+            <div
+              className={`sizing-final sizing-final--staged sizing-final--solo ${stagedTranchePlan.totalPositionRecommendationPct === 0 ? 'sizing-final--zero' : ''}`}
+              role="region"
+              aria-label="Total position if you fill every rung on the anti-martingale ladder"
+            >
+              <span className="sizing-final-badge" aria-hidden="true">
+                Ladder total
+              </span>
+              <div className="sizing-final-label">If you buy every rung in the table above</div>
+              <div className="sizing-final-value">
+                {stagedTranchePlan.totalPositionRecommendationPct === 0
+                  ? 'No exposure from this tranche model'
+                  : `${fmt(stagedTranchePlan.totalPositionRecommendationPct, 2)}% of portfolio (sum of tranches)`}
+              </div>
+              <p className="sizing-final-hint">
+                Sum of portfolio % across tranches equals Stage 3 (after probability) when all four are filled.
+              </p>
+            </div>
+          ) : null}
 
           <div className="sizing-export">
             <p className="sizing-export-intro">

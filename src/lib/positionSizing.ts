@@ -403,3 +403,69 @@ export function calculatePositionSize(inputs: SizingInputs): SizingResult {
     warnings,
   };
 }
+
+/** Ladder: drawdown from scale-in price to downside anchor (each row’s %). */
+export const STAGED_TRANCHE_DOWNSIDE_PCTS = [30, 20, 10, 0] as const;
+/** Add units per row; sum = 10 maps to 100% of Stage 3. */
+export const STAGED_TRANCHE_ADD_UNITS = [1, 2, 3, 4] as const;
+export const STAGED_TRANCHE_UNITS_SUM = STAGED_TRANCHE_ADD_UNITS.reduce((a, b) => a + b, 0);
+
+export type StagedTrancheRow = {
+  downsidePct: number;
+  addUnits: number;
+  /** Share of Stage 3 cap: `addUnits / STAGED_TRANCHE_UNITS_SUM`. */
+  trancheFractionOfStage3: number;
+  /** 10, 20, 30, 40 — percent of Stage 3 cap for this row. */
+  pctOfStage3Cap: number;
+  /**
+   * Scale-in price P such that downside from P to downside anchor D is `downsidePct%`:
+   * `(P − D) / P = downsidePct/100` ⇒ `P = D / (1 − downsidePct/100)` (for downsidePct &lt; 100).
+   */
+  price: number | null;
+  /** Portfolio % = `afterProbability × trancheFractionOfStage3`. */
+  portfolioAllocationPct: number;
+};
+
+export type StagedTranchePlan = {
+  rows: StagedTrancheRow[];
+  /** Sum of `portfolioAllocationPct` — equals Stage 3 cap when all tranches filled (within rounding). */
+  totalPositionRecommendationPct: number;
+  /** `totalPositionRecommendationPct / afterProbability` — should be ~1 when all rows filled. */
+  totalVsStage3Ratio: number | null;
+};
+
+export function computeStagedTranchePlan(
+  afterProbability: number,
+  /** “Downside price” from Expected downside — anchor D for scale-in ladder. */
+  downsideAnchorPrice: number | null,
+): StagedTranchePlan {
+  const rows: StagedTrancheRow[] = STAGED_TRANCHE_DOWNSIDE_PCTS.map((downsidePct, i) => {
+    const addUnits = STAGED_TRANCHE_ADD_UNITS[i]!;
+    const trancheFraction = addUnits / STAGED_TRANCHE_UNITS_SUM;
+    const pctOfStage3Cap = addUnits * 10;
+    const portfolioAllocationPct =
+      Math.round(afterProbability * trancheFraction * 100) / 100;
+    const denom = 1 - downsidePct / 100;
+    const price =
+      downsideAnchorPrice != null && downsideAnchorPrice > 0 && denom > 0
+        ? Math.round((downsideAnchorPrice / denom) * 10000) / 10000
+        : null;
+    return {
+      downsidePct,
+      addUnits,
+      trancheFractionOfStage3: trancheFraction,
+      pctOfStage3Cap,
+      price,
+      portfolioAllocationPct,
+    };
+  });
+
+  const totalPositionRecommendationPct =
+    Math.round(rows.reduce((s, r) => s + r.portfolioAllocationPct, 0) * 100) / 100;
+  const totalVsStage3Ratio =
+    afterProbability > 0
+      ? Math.round((totalPositionRecommendationPct / afterProbability) * 1000) / 1000
+      : null;
+
+  return { rows, totalPositionRecommendationPct, totalVsStage3Ratio };
+}

@@ -90,19 +90,37 @@ export function useGemRuns(gemId: string) {
 
 export function useCompanyRuns(companyId: string) {
   const [runs, setRuns] = useState<GemRun[]>([]);
-  const [loading, setLoading] = useState(true);
+  /** Which company `runs` were loaded for; must match `companyId` to use `runs`. */
+  const [dataCompanyId, setDataCompanyId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!companyId) {
-      setLoading(false);
+      setRuns([]);
+      setDataCompanyId('');
       return;
     }
-    setLoading(true);
+    let cancelled = false;
     fetchAllGemRunsForCompany(companyId)
-      .then(setRuns)
-      .catch(() => setRuns([]))
-      .finally(() => setLoading(false));
+      .then(data => {
+        if (!cancelled) {
+          setRuns(data);
+          setDataCompanyId(companyId);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setRuns([]);
+          setDataCompanyId(companyId);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [companyId]);
 
-  return { runs, loading };
+  const runsMatch = companyId !== '' && dataCompanyId === companyId;
+  const alignedRuns = runsMatch ? runs : [];
+  const loading = companyId !== '' && !runsMatch;
+
+  return { runs: alignedRuns, loading };
 }

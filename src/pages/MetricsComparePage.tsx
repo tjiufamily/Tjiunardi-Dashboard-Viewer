@@ -29,6 +29,20 @@ import { useStockQuotes } from '../hooks/useStockQuotes';
 import { normalizeTickerSymbol } from '../lib/stockQuotes';
 import { loadPriceOverrides, persistPriceOverrides } from '../lib/quoteOverrides';
 import { currentRouteWithSearch } from '../lib/navigationState';
+import {
+  buildMetricsLandscapeCSV,
+  metricsLandscapeFilename,
+} from '../lib/exportMetrics';
+import { downloadTextFile } from '../lib/exportScores';
+
+const METRICS_TH_TIP_LAST_PRICE =
+  'Delayed price from Finnhub, Yahoo Finance, or Gemini backup. Cached across sessions. Click a cell to enter a manual override (shown in orange).';
+const METRICS_TH_TIP_IMPLIED_CAGR =
+  'Implied CAGR from last price to the 10 Yr target price captured by Value Compounding Analyst V3.3.';
+const METRICS_TH_TIP_BITS_DOWNSIDE =
+  'Downside Risk = 1 − (BITS — Asymmetric Alpha Analyst target price ÷ last price).';
+const METRICS_TH_TIP_BITS_TO_VCA =
+  '10Y CAGR from BITS (Asymmetric Alpha Analyst) target price to Value Compounding Analyst V3.3 10Y target price.';
 
 /** Default gem when opening Metrics with no `?gem=` (match by name). */
 const DEFAULT_METRICS_GEM_NAME = 'Value Compounding Analyst V3.3';
@@ -373,6 +387,16 @@ export default function MetricsComparePage() {
     return cols;
   }, [selectedGems, selectedRunsByGem]);
 
+  const metricExportHeaders = useMemo(
+    () =>
+      metricColumns.map(col =>
+        selectedGemIds.length > 1
+          ? `${col.label} (${gemShortLabelById.get(col.gemId) ?? col.gemId})`
+          : col.label,
+      ),
+    [metricColumns, selectedGemIds.length, gemShortLabelById],
+  );
+
   const rows: Row[] = useMemo(() => {
     const companyMap = new Map(companies.map(c => [c.id, c]));
     const companyIds = new Set<string>();
@@ -663,6 +687,23 @@ export default function MetricsComparePage() {
     return list;
   }, [enrichedRows, search, columnMins, columnBoundModes, metricColumns, sortKey, sortDir]);
 
+  const exportLandscape = useCallback(() => {
+    const csv = buildMetricsLandscapeCSV({
+      rows: filteredSorted,
+      metricColumnIds: metricColumns.map(c => c.id),
+      metricColumnHeaders: metricExportHeaders,
+      showBitsDerived,
+      showWeightedScores,
+    });
+    downloadTextFile(metricsLandscapeFilename(), csv, 'text/csv;charset=utf-8');
+  }, [
+    filteredSorted,
+    metricColumns,
+    metricExportHeaders,
+    showBitsDerived,
+    showWeightedScores,
+  ]);
+
   const arrow = (key: SortKey) => (sortKey === key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
 
   const onGemChange = (ids: string[]) => {
@@ -763,6 +804,14 @@ export default function MetricsComparePage() {
         </button>
         <button
           type="button"
+          className="btn btn-primary btn-sm"
+          onClick={exportLandscape}
+          disabled={selectedGemIds.length === 0 || filteredSorted.length === 0}
+        >
+          Export table (.csv)
+        </button>
+        <button
+          type="button"
           className="btn btn-ghost btn-sm"
           onClick={() => refreshQuotes(false)}
           disabled={selectedGemIds.length === 0 || rowCount === 0 || quotesLoading}
@@ -846,14 +895,14 @@ export default function MetricsComparePage() {
                   <th onClick={() => toggleSort('ticker')}>Ticker{arrow('ticker')}</th>
                   <th
                     className="metric-col metrics-th-tip"
-                    data-tip="Delayed price from Finnhub, Yahoo Finance, or Gemini backup. Cached across sessions. Click a cell to enter a manual override (shown in orange)."
+                    title={METRICS_TH_TIP_LAST_PRICE}
                     onClick={() => toggleSort('lastPrice')}
                   >
                     Last price (delayed){arrow('lastPrice')}
                   </th>
                   <th
                     className="metric-col metrics-th-tip"
-                    data-tip="Implied CAGR from last price to the 10 Yr target price captured by Value Compounding Analyst V3.3."
+                    title={METRICS_TH_TIP_IMPLIED_CAGR}
                     onClick={() => toggleSort('impliedCagr')}
                   >
                     Implied 10Y CAGR % (VCA){arrow('impliedCagr')}
@@ -861,7 +910,7 @@ export default function MetricsComparePage() {
                   {showBitsDerived && (
                     <th
                       className="metric-col metrics-th-tip"
-                      data-tip="Downside Risk = 1 − (BITS — Asymmetric Alpha Analyst target price ÷ last price)."
+                      title={METRICS_TH_TIP_BITS_DOWNSIDE}
                       onClick={() => toggleSort('bitsDownsideRisk')}
                     >
                       Downside Risk % (BITS){arrow('bitsDownsideRisk')}
@@ -870,7 +919,7 @@ export default function MetricsComparePage() {
                   {showBitsDerived && (
                     <th
                       className="metric-col metrics-th-tip"
-                      data-tip="10Y CAGR from BITS (Asymmetric Alpha Analyst) target price to Value Compounding Analyst V3.3 10Y target price."
+                      title={METRICS_TH_TIP_BITS_TO_VCA}
                       onClick={() => toggleSort('bitsToVcaTenYearCagr')}
                     >
                       10Y CAGR % (BITS→VCA){arrow('bitsToVcaTenYearCagr')}

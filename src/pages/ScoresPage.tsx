@@ -6,6 +6,11 @@ import type { ScoreType, CompanyScores } from '../types';
 import { avgOfScores, rowPassesColumnMins, type ColumnBoundMode } from '../lib/columnMinFilters';
 import { ColumnMinFilterCell } from '../components/ColumnMinFilterCell';
 import { currentRouteWithSearch } from '../lib/navigationState';
+import {
+  buildScoresLandscapeCSV,
+  scoresLandscapeFilename,
+  downloadTextFile,
+} from '../lib/exportScores';
 
 type SortKey = 'name' | 'ticker' | ScoreType | 'avg';
 type SortDir = 'asc' | 'desc';
@@ -39,6 +44,12 @@ export default function ScoresPage() {
     setSearch('');
     setColumnMins({});
     setColumnBoundModes({});
+  };
+
+  const exportLandscape = () => {
+    const csv = buildScoresLandscapeCSV(filtered);
+    const filename = scoresLandscapeFilename();
+    downloadTextFile(filename, csv, 'text/csv;charset=utf-8');
   };
 
   const toggleSort = (key: SortKey) => {
@@ -113,6 +124,9 @@ export default function ScoresPage() {
       <div className="scores-toolbar">
         <button type="button" className="btn btn-ghost btn-sm scores-reset-filters" onClick={resetFilters}>
           Reset filters
+        </button>
+        <button type="button" className="btn btn-primary btn-sm" onClick={exportLandscape}>
+          Export table (.csv)
         </button>
       </div>
 

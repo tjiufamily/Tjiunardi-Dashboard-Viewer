@@ -1,4 +1,9 @@
-import { type SizingResult, PROBABILITY_SCORE_TYPES } from './positionSizing';
+import {
+  type SizingResult,
+  type StagedTranchePlan,
+  PROBABILITY_SCORE_TYPES,
+  computeStagedTranchePlan,
+} from './positionSizing';
 import type { CompanyScores } from '../types';
 import { SCORE_LABELS } from '../types';
 
@@ -91,14 +96,57 @@ type ExportPayload = {
     downsidePercent: string;
   };
   result: SizingResult;
+  stagedTranchePlan: StagedTranchePlan;
 };
+
+export type BuildPositionSizingMarkdownOptions = {
+  /** Downside price from Expected downside — anchor D for scale-in prices (P = D ÷ (1 − drawdown%)). */
+  downsideAnchorPrice?: number | null;
+};
+
+function appendStagedTrancheMarkdown(lines: string[], plan: StagedTranchePlan): void {
+  lines.push(
+    '## Anti-martingale ladder (add more at lower prices)',
+    '',
+    'Anti-martingale: allocate more of the Stage 3 line at lower prices (risk often feels lower on high-quality names). Drawdown % is from scale-in price P down to downside D (Expected downside), not from the live quote. Formula: P = D ÷ (1 − d) with d = drawdown as decimal. Add units 1–4 (sum 10): share = units ÷ 10 of Stage 3 per row; four rows sum to 100% of Stage 3. Complement to the one-shot Stage 4 sizing using current price + expected downside (see Summary).',
+    '',
+    '| Drawdown (scale-in → downside price) | Scale-in price | Add units | % of Stage 3 cap | Position sizing (portfolio %) |',
+    '|---------------------------------------:|---------------:|----------:|-----------------:|--------------------------------:|',
+  );
+  for (const r of plan.rows) {
+    const px = r.price == null ? '—' : r.price.toFixed(2);
+    const dCol =
+      r.downsidePct === 0 ? '0% (downside price)' : `${r.downsidePct.toFixed(0)}%`;
+    lines.push(
+      `| ${dCol} | ${px} | ${r.addUnits} | ${r.pctOfStage3Cap.toFixed(0)}% | ${r.portfolioAllocationPct.toFixed(2)}% |`,
+    );
+  }
+  const ratioNote =
+    plan.totalVsStage3Ratio == null
+      ? ''
+      : ` (${(plan.totalVsStage3Ratio * 100).toFixed(2)}% of Stage 3 cap)`;
+  lines.push(
+    '| **Total** | — | — | — | **' +
+      `${plan.totalPositionRecommendationPct.toFixed(2)}%**${ratioNote} |`,
+    '',
+  );
+}
 
 export function buildPositionSizingMarkdown(
   company: CompanyScores,
   cagr: string,
   downside: string,
-  result: SizingResult,
+  sizingResult: SizingResult,
+  options?: BuildPositionSizingMarkdownOptions,
 ): string {
+  const result = sizingResult;
+  const plan = computeStagedTranchePlan(
+    sizingResult.afterProbability,
+    options?.downsideAnchorPrice != null && options.downsideAnchorPrice > 0
+      ? options.downsideAnchorPrice
+      : null,
+  );
+
   const lines: string[] = [
     `# Position sizing — ${company.companyName} (${company.ticker})`,
     '',
@@ -108,7 +156,8 @@ export function buildPositionSizingMarkdown(
     '',
     '## Summary',
     '',
-    `- **Recommended max position:** ${result.finalPosition === 0 ? '0% (wait / do not invest)' : `${result.finalPosition.toFixed(2)}% of portfolio`}`,
+    `- **Recommended max position (at current price + expected downside):** ${sizingResult.finalPosition === 0 ? '0% (wait / do not invest)' : `${sizingResult.finalPosition.toFixed(2)}% of portfolio`}`,
+    `- **Staged plan total (if all tranches filled):** ${plan.totalPositionRecommendationPct.toFixed(2)}% of portfolio`,
     `- **Base position:** ${result.basePosition.toFixed(2)}%`,
     `- **After CAGR:** ${result.afterCagr.toFixed(2)}%`,
     `- **Probability:** ×${result.probabilityMultiplier} — ${result.probabilityNote.replace(/\|/g, '/')}`,
@@ -153,6 +202,8 @@ export function buildPositionSizingMarkdown(
     `- ${result.downsideNote}`,
     '',
   );
+
+  appendStagedTrancheMarkdown(lines, plan);
 
   if (result.warnings.length) {
     lines.push('## Warnings', '', ...result.warnings.map(w => `- ${w}`), '');
