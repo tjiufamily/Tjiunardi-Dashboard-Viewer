@@ -6,23 +6,34 @@ import {
   sleep,
 } from '../lib/stockQuotes';
 import { fetchQuoteGemini } from '../lib/geminiQuoteFallback';
-import { loadQuoteCache, upsertQuoteCache } from '../lib/quoteCache';
+import { loadQuoteCache, upsertQuoteCache, isQuoteFresh } from '../lib/quoteCache';
 
 const FINNHUB_GAP_MS = 1100;
 const GEMINI_GAP_MS = 600;
 const GEMINI_EXTRA_GAP_MS = 500;
 const QUOTE_LAST_REFRESHED_KEY = 'tjiunardi.dashboard.quoteCache.lastRefreshedAt.v1';
+const QUOTE_FRESH_MS = 60 * 60 * 1000; // 60 minutes
+const AUTO_REFRESH_MS = 60 * 60 * 1000; // 60 minutes
 
 export type QuoteFetchPhase = 'idle' | 'web' | 'gemini';
 export type QuoteFetchProgress = { phase: QuoteFetchPhase; current: number; total: number };
 
 export type TickerInfo = { ticker: string; name?: string };
 
+/** In-memory session cache: survives tab switches without re-fetching. */
+const sessionQuoteCache = new Map<string, number>();
+/** Prevent duplicate in-flight fetches for the same ticker. */
+const inFlightQuoteFetch = new Map<string, Promise<number | null>>();
+
 /**
  * Fetches delayed last prices (deduped).
  * Pass 1: Finnhub → Yahoo (symbol) → Yahoo (name search) → Stooq.
  * Pass 2: Gemini for symbols still missing.
- * Persists successful prices to localStorage (survives browser restart).
+ * Persists successful prices to localStorage (survives browser restart)
+ * and to session cache (survives tab switches without re-fetch).
+ *
+ * Only fetches missing/stale quotes (> 60 min).  Auto-refreshes at 60 min.
+ * Manual refresh prioritises empty cells first, then stale ones.
  */
 export function useStockQuotes(infos: TickerInfo[]) {
   const entries = useMemo(() => {
@@ -35,10 +46,7 @@ export function useStockQuotes(infos: TickerInfo[]) {
   }, [infos]);
 
   const key = useMemo(() => entries.map(([t]) => t).join('|'), [entries]);
-  const nameOf = useMemo(
-    () => new Map(entries),
-    [entries],
-  );
+  const nameOf = useMemo(() => new Map(entries), [entries]);
 
   const [liveQuotes, setLiveQuotes] = useState<Map<string, number | null>>(() => new Map());
   const [loading, setLoading] = useState(false);
@@ -65,6 +73,15 @@ export function useStockQuotes(infos: TickerInfo[]) {
     setRefreshSeq(v => v + 1);
   }, []);
 
+  // Auto-refresh timer
+  useEffect(() => {
+    if (!key) return;
+    const id = window.setInterval(() => {
+      setRefreshSeq(v => v + 1);
+    }, AUTO_REFRESH_MS);
+    return () => window.clearInterval(id);
+  }, [key]);
+
   const quotes = useMemo(() => {
     if (!key) return new Map<string, number | null>();
     const cache = loadQuoteCache();
@@ -72,8 +89,9 @@ export function useStockQuotes(infos: TickerInfo[]) {
     const m = new Map<string, number | null>();
     for (const t of list) {
       const live = liveQuotes.get(t);
+      const session = sessionQuoteCache.get(t);
       const cached = cache.get(t);
-      const v = live != null && live > 0 ? live : cached ?? null;
+      const v = live != null && live > 0 ? live : session != null && session > 0 ? session : cached ?? null;
       m.set(t, v);
     }
     return m;
@@ -90,12 +108,21 @@ export function useStockQuotes(infos: TickerInfo[]) {
     const list = key.split('|');
     const cached = loadQuoteCache();
 
+    // Immediately populate from session cache + localStorage
     setLiveQuotes(prev => {
       const next = new Map<string, number | null>();
       for (const t of list) {
         const fromPrev = prev.get(t);
+        const fromSession = sessionQuoteCache.get(t);
         const fromStore = cached.get(t);
-        next.set(t, fromPrev != null && fromPrev > 0 ? fromPrev : fromStore ?? null);
+        next.set(
+          t,
+          fromPrev != null && fromPrev > 0
+            ? fromPrev
+            : fromSession != null && fromSession > 0
+              ? fromSession
+              : fromStore ?? null,
+        );
       }
       return next;
     });
@@ -103,26 +130,41 @@ export function useStockQuotes(infos: TickerInfo[]) {
     let cancelled = false;
     const isForced = forceRefreshNextRef.current;
     forceRefreshNextRef.current = false;
-    const missingToFetch = list.filter(t => {
+    const now = Date.now();
+
+    const staleOrMissing = list.filter(t => {
       const p = cached.get(t);
-      return p == null || p <= 0;
+      if (p == null || p <= 0) return true;
+      if (sessionQuoteCache.has(t) && !isForced) return false;
+      return !isQuoteFresh(t, QUOTE_FRESH_MS, now);
     });
+
     const fetchQueue = isForced
       ? [
-          ...missingToFetch,
-          ...list.filter(t => {
-            const p = cached.get(t);
-            return p != null && p > 0;
-          }),
+          ...staleOrMissing,
+          ...list.filter(t => !staleOrMissing.includes(t)),
         ]
-      : missingToFetch;
+      : staleOrMissing;
+
+    // Don't show loading spinner if we already have displayed prices for all tickers
+    const allHaveDisplayedPrice = list.every(t => {
+      const live = liveQuotes.get(t);
+      if (live != null && live > 0) return true;
+      const session = sessionQuoteCache.get(t);
+      if (session != null && session > 0) return true;
+      const c = cached.get(t);
+      return c != null && c > 0;
+    });
+    const blockUi = !allHaveDisplayedPrice && fetchQueue.length > 0;
+
     if (fetchQueue.length === 0) {
       setLoading(false);
       setError(null);
       setFetchProgress({ phase: 'idle', current: 0, total: 0 });
       return;
     }
-    setLoading(true);
+
+    setLoading(blockUi);
     setError(null);
     setFetchProgress({ phase: 'web', current: 0, total: fetchQueue.length });
 
@@ -139,26 +181,37 @@ export function useStockQuotes(infos: TickerInfo[]) {
 
         setFetchProgress({ phase: 'web', current: i + 1, total: fetchQueue.length });
 
-        let r: Awaited<ReturnType<typeof fetchDelayedQuoteWithoutGemini>> | undefined;
-        try {
-          r = await fetchDelayedQuoteWithoutGemini(t, nameOf.get(t));
-          if (cancelled) return;
-
-          const price = r.price != null && r.price > 0 ? r.price : null;
-          upsertQuoteCache(new Map([[t, price]]));
-
-          setLiveQuotes(prev => {
-            const next = new Map(prev);
-            const merged = price ?? prev.get(t) ?? loadQuoteCache().get(t) ?? null;
-            next.set(t, merged);
-            return next;
-          });
-
-          if (price != null) anyLivePrice = true;
-          else webMissed.push(t);
-        } catch {
-          webMissed.push(t);
+        // Deduplicate in-flight requests
+        let pricePromise = inFlightQuoteFetch.get(t);
+        if (!pricePromise) {
+          pricePromise = (async () => {
+            try {
+              const r = await fetchDelayedQuoteWithoutGemini(t, nameOf.get(t));
+              return r.price != null && r.price > 0 ? r.price : null;
+            } catch {
+              return null;
+            }
+          })();
+          inFlightQuoteFetch.set(t, pricePromise);
+          pricePromise.finally(() => inFlightQuoteFetch.delete(t));
         }
+
+        const price = await pricePromise;
+        if (cancelled) return;
+
+        upsertQuoteCache(new Map([[t, price]]));
+        if (price != null && price > 0) sessionQuoteCache.set(t, price);
+
+        setLiveQuotes(prev => {
+          const next = new Map(prev);
+          const session = sessionQuoteCache.get(t);
+          const merged = price ?? session ?? prev.get(t) ?? loadQuoteCache().get(t) ?? null;
+          next.set(t, merged);
+          return next;
+        });
+
+        if (price != null) anyLivePrice = true;
+        else webMissed.push(t);
 
         if (cancelled) return;
 
@@ -192,10 +245,12 @@ export function useStockQuotes(infos: TickerInfo[]) {
             if (cancelled) return;
 
             upsertQuoteCache(new Map([[t, g]]));
+            if (g != null && g > 0) sessionQuoteCache.set(t, g);
 
             setLiveQuotes(prev => {
               const next = new Map(prev);
-              const merged = g != null && g > 0 ? g : prev.get(t) ?? loadQuoteCache().get(t) ?? null;
+              const session = sessionQuoteCache.get(t);
+              const merged = g != null && g > 0 ? g : session ?? prev.get(t) ?? loadQuoteCache().get(t) ?? null;
               next.set(t, merged);
               return next;
             });
@@ -228,10 +283,10 @@ export function useStockQuotes(infos: TickerInfo[]) {
         );
       } else {
         setError(null);
-        const now = Date.now();
-        setLastRefreshedAt(now);
+        const ts = Date.now();
+        setLastRefreshedAt(ts);
         try {
-          localStorage.setItem(QUOTE_LAST_REFRESHED_KEY, String(now));
+          localStorage.setItem(QUOTE_LAST_REFRESHED_KEY, String(ts));
         } catch {
           // ignore storage failures
         }

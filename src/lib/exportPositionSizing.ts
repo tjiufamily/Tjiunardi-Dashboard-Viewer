@@ -114,17 +114,18 @@ export function buildPositionSizingMarkdown(
     `- **Probability:** ×${result.probabilityMultiplier} — ${result.probabilityNote.replace(/\|/g, '/')}`,
     `- **After probability:** ${result.afterProbability.toFixed(2)}%`,
     '',
-    '## Probability inputs (5 metrics + avg)',
+    '## Probability inputs (selected metrics + avg)',
     '',
-    '| Metric | Score |',
-    '|--------|------:|',
+    '| Metric | Score | Stage 3 |',
+    '|--------|------:|:-------|',
     ...PROBABILITY_SCORE_TYPES.map(st => {
       const d = result.probabilityDetails.find(x => x.scoreType === st);
       const v = d?.value;
-      return `| ${SCORE_LABELS[st].replace(/\|/g, '/')} | ${v == null ? '—' : v.toFixed(2)} |`;
+      const inc = d?.included ? 'Yes' : 'No';
+      return `| ${SCORE_LABELS[st].replace(/\|/g, '/')} | ${v == null ? '—' : v.toFixed(2)} | ${inc} |`;
     }),
     '',
-    `- **Average (5):** ${result.probabilityAverage == null ? '—' : result.probabilityAverage.toFixed(2)}`,
+    `- **Average (included):** ${result.probabilityAverage == null ? '—' : result.probabilityAverage.toFixed(2)}`,
     '',
     '## Weighted scores → base',
     '',

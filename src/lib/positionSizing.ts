@@ -1,5 +1,5 @@
 import type { ScoreType } from '../types';
-import { SCORE_TYPES } from '../types';
+import { SCORE_TYPES, SCORE_LABELS } from '../types';
 
 export type ScoreThreshold = { minScore: number; maxPct: number };
 
@@ -46,7 +46,7 @@ export const DEFAULT_DOWNSIDE_BRACKETS: DownsideBracket[] = [
   { maxDownside: 10, haircut: 1.0 },
 ];
 
-/** Five quality metrics + their average drive Stage 3 (probability) multipliers (six values vs. tier thresholds). */
+/** Default Stage 3 (probability) metrics: each selected score plus their mean are compared to tier thresholds. */
 export const PROBABILITY_SCORE_TYPES: ScoreType[] = [
   'compounder_checklist',
   'terminal_value',
@@ -54,6 +54,15 @@ export const PROBABILITY_SCORE_TYPES: ScoreType[] = [
   'competitive_advantage',
   'moat',
 ];
+
+/** Canonical order + subset. `undefined` = all five; `[]` = none selected (Stage 3 skipped). */
+export function normalizeIncludedProbabilityScoreTypes(
+  requested: ScoreType[] | undefined,
+): ScoreType[] {
+  if (requested === undefined) return [...PROBABILITY_SCORE_TYPES];
+  const allow = new Set(requested);
+  return PROBABILITY_SCORE_TYPES.filter(st => allow.has(st));
+}
 
 export type ProbabilityTierRule = { minAbove: number; multiplier: number };
 
@@ -65,19 +74,21 @@ export const DEFAULT_PROBABILITY_TIERS: ProbabilityTierRule[] = [
   { minAbove: 7, multiplier: 0.5 },
 ];
 
-/** If all six values (5 metrics + avg) are strictly below this, multiplier is 0. */
+/** If all inputs (N selected metrics + their average) are strictly below this, multiplier is 0. */
 export const DEFAULT_PROBABILITY_ALL_BELOW = 7;
 
 export type ProbabilityMultiplierOptions = {
   tiers?: ProbabilityTierRule[];
   allBelow?: number;
+  /** Which probability metrics to include; default = all `PROBABILITY_SCORE_TYPES`. */
+  includedProbabilityScoreTypes?: ScoreType[];
 };
 
-export type ProbabilityDetail = { scoreType: ScoreType; value: number | null };
+export type ProbabilityDetail = { scoreType: ScoreType; value: number | null; included: boolean };
 
 export type ProbabilityMultiplierResult = {
   details: ProbabilityDetail[];
-  /** Mean of the five probability metric scores (when all five present). */
+  /** Mean of included probability metric scores (when all included metrics present). */
   averageMetrics: number | null;
   multiplier: number;
   note: string;
@@ -94,32 +105,44 @@ export function computeProbabilityMultiplier(
 ): ProbabilityMultiplierResult {
   const tiers = normalizeTiers(options?.tiers?.length ? options.tiers : DEFAULT_PROBABILITY_TIERS);
   const allBelow = options?.allBelow ?? DEFAULT_PROBABILITY_ALL_BELOW;
+  const included = normalizeIncludedProbabilityScoreTypes(options?.includedProbabilityScoreTypes);
 
   const details: ProbabilityDetail[] = PROBABILITY_SCORE_TYPES.map(st => ({
     scoreType: st,
     value: scores[st] ?? null,
+    included: included.includes(st),
   }));
-  const five = details.map(d => d.value);
-  if (five.some(v => v == null)) {
-    const present = five.filter((v): v is number => v != null);
-    const avg = present.length ? present.reduce((a, b) => a + b, 0) / present.length : null;
+
+  if (included.length === 0) {
     return {
       details,
-      averageMetrics: avg,
+      averageMetrics: null,
       multiplier: 1,
-      note:
-        'Incomplete Stock Compounder / Terminal / Antifragile / Competitive / Moat scores — probability stage skipped (×1).',
+      note: 'No probability metrics selected — probability stage skipped (×1).',
       skipped: true,
     };
   }
-  const vals = five as number[];
-  const averageMetrics = vals.reduce((a, b) => a + b, 0) / 5;
-  const six = [...vals, averageMetrics];
 
-  // Probability tiers apply conservatively: all six inputs (5 metrics + their average) must meet the tier.
-  // Use inclusive comparison so exact boundary values (e.g. exactly 9.0) don't fall into the lower tier.
-  const allGE = (t: number) => six.every(s => s >= t);
-  const allLT = (t: number) => six.every(s => s < t);
+  const missingIncluded = included.filter(st => scores[st] == null);
+  if (missingIncluded.length > 0) {
+    const names = missingIncluded.map(st => SCORE_LABELS[st]).join(' / ');
+    return {
+      details,
+      averageMetrics: null,
+      multiplier: 1,
+      note: `Incomplete selected metrics (${names}) — probability stage skipped (×1).`,
+      skipped: true,
+    };
+  }
+
+  const vals = included.map(st => scores[st]!) as number[];
+  const n = vals.length;
+  const averageMetrics = vals.reduce((a, b) => a + b, 0) / n;
+  const inputs = [...vals, averageMetrics];
+  const totalK = n + 1;
+
+  const allGE = (t: number) => inputs.every(s => s >= t);
+  const allLT = (t: number) => inputs.every(s => s < t);
 
   for (const tier of tiers) {
     if (allGE(tier.minAbove)) {
@@ -127,7 +150,7 @@ export function computeProbabilityMultiplier(
         details,
         averageMetrics,
         multiplier: tier.multiplier,
-        note: `All six (5 metrics + avg) >= ${tier.minAbove} → ×${tier.multiplier}`,
+        note: `All ${totalK} (${n} metrics + avg) >= ${tier.minAbove} → ×${tier.multiplier}`,
         skipped: false,
       };
     }
@@ -137,7 +160,7 @@ export function computeProbabilityMultiplier(
       details,
       averageMetrics,
       multiplier: 0,
-      note: `All six < ${allBelow} → ×0`,
+      note: `All ${totalK} < ${allBelow} → ×0`,
       skipped: false,
     };
   }
@@ -164,6 +187,8 @@ export type SizingInputs = {
   avgSuperiorMaxPct: number;
   probabilityTiers: ProbabilityTierRule[];
   probabilityAllBelow: number;
+  /** Subset of `PROBABILITY_SCORE_TYPES` for Stage 3; default = all five. */
+  includedProbabilityScoreTypes?: ScoreType[];
   includeStage1?: boolean;
   includeStage2?: boolean;
   includeStage3?: boolean;
@@ -192,7 +217,7 @@ export type SizingResult = {
   cagrNote: string;
   afterCagr: number;
   probabilityDetails: ProbabilityDetail[];
-  /** Mean of the five probability metric scores. */
+  /** Mean of included probability metric scores (Stage 3). */
   probabilityAverage: number | null;
   probabilityMultiplier: number;
   probabilityNote: string;
@@ -307,6 +332,7 @@ export function calculatePositionSize(inputs: SizingInputs): SizingResult {
   const prob = computeProbabilityMultiplier(inputs.scores, {
     tiers: inputs.probabilityTiers,
     allBelow: inputs.probabilityAllBelow,
+    includedProbabilityScoreTypes: inputs.includedProbabilityScoreTypes,
   });
   const probabilityMultiplier = includeStage3 ? prob.multiplier : 1;
   const probabilityNote = includeStage3 ? prob.note : 'Stage 3 disabled — multiplier forced to ×1.';

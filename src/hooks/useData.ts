@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '../supabase';
 import {
   fetchAllCompanies,
+  fetchAllGems,
   fetchAllGemRunsByCreatedAtDesc,
   fetchAllGemRunsForCompany,
   fetchAllGemRunsForGem,
@@ -27,14 +28,10 @@ export function useGems() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    supabase
-      .from('gems')
-      .select('*')
-      .order('rank', { ascending: true, nullsFirst: false })
-      .then(({ data, error }) => {
-        if (!error && data) setGems(data as Gem[]);
-        setLoading(false);
-      });
+    fetchAllGems()
+      .then(setGems)
+      .catch(() => setGems([]))
+      .finally(() => setLoading(false));
   }, []);
 
   return { gems, loading };

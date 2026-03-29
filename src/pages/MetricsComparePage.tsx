@@ -292,17 +292,11 @@ export default function MetricsComparePage() {
     return m;
   }, [companyScores]);
 
-  const gemIdsWithCapturedMetrics = useMemo(() => {
-    const s = new Set<string>();
-    for (const r of allRuns) {
-      const cm = r.captured_metrics;
-      if (cm && Object.keys(cm).length > 0) s.add(r.gem_id);
-    }
-    return s;
-  }, [allRuns]);
-
   const gemOptions = useMemo(() => {
-    let list = gems.filter(g => gemIdsWithCapturedMetrics.has(g.id));
+    let list = gems.filter(g => {
+      const tags = g.capture_config?.multiTags;
+      return tags && tags.length > 0 && tags.some(t => t.storageKey);
+    });
 
     const selectedMissing = selectedGemIds
       .map(id => gems.find(g => g.id === id))
@@ -311,7 +305,7 @@ export default function MetricsComparePage() {
     if (selectedMissing.length > 0) list = [...selectedMissing, ...list];
 
     return list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-  }, [gems, gemIdsWithCapturedMetrics, selectedGemIds]);
+  }, [gems, selectedGemIds]);
 
   const selectedGems = useMemo(
     () => selectedGemIds.map(id => gems.find(g => g.id === id)).filter((g): g is NonNullable<typeof g> => Boolean(g)),
@@ -323,7 +317,7 @@ export default function MetricsComparePage() {
       const name = (g.name ?? '').toLowerCase();
       if (name.includes('value') && name.includes('compounding') && name.includes('v3.3')) {
         m.set(g.id, 'VCA v3.3');
-      } else if (name.includes('blood') && name.includes('street')) {
+      } else if (/\bbits\b/.test(name) || name.includes('asymmetric alpha analyst')) {
         m.set(g.id, 'BITS');
       } else {
         const short = (g.name ?? g.id)
@@ -428,7 +422,7 @@ export default function MetricsComparePage() {
   const [refreshClock, setRefreshClock] = useState(() => Date.now());
   useEffect(() => {
     if (!lastRefreshedAt) return;
-    const id = window.setInterval(() => setRefreshClock(Date.now()), 3_600_000);
+    const id = window.setInterval(() => setRefreshClock(Date.now()), 60_000);
     return () => window.clearInterval(id);
   }, [lastRefreshedAt]);
 
@@ -442,38 +436,62 @@ export default function MetricsComparePage() {
     const keys = metricStorageKeysForGem(vcaGem, vcaRuns);
     return tenYearTargetPriceMetricKey(vcaGem, keys);
   }, [vcaGem, vcaRuns]);
-  const bitsGem = useMemo(
+  const bitsSelectedGems = useMemo(
     () =>
-      selectedGems.find(g =>
-        /(blood\s+in\s+the\s+streets?|bits\s+by\s+asymmetric\s+alpha\s+analyst|asymmetric\s+alpha\s+analyst)/i.test(
-          g.name ?? '',
-        ),
-      ),
+      selectedGems.filter(g => {
+        const n = (g.name ?? '').toLowerCase();
+        return /\bbits\b/.test(n) || /asymmetric\s*alpha\s*analyst/.test(n);
+      }),
     [selectedGems],
   );
-  const bitsRuns = useMemo(
-    () => (bitsGem ? allRuns.filter(r => r.gem_id === bitsGem.id) : []),
-    [allRuns, bitsGem],
+  const bitsAllRuns = useMemo(
+    () => {
+      if (bitsSelectedGems.length === 0) return [];
+      const ids = new Set(bitsSelectedGems.map(g => g.id));
+      return allRuns.filter(r => ids.has(r.gem_id));
+    },
+    [allRuns, bitsSelectedGems],
   );
-  const latestBitsByCompany = useMemo(() => latestRunByCompany(bitsRuns), [bitsRuns]);
+  const latestBitsByCompany = useMemo(() => {
+    const byCompany = new Map<string, { run: ReturnType<typeof latestRunByCompany> extends Map<string, infer V> ? V : never; gemId: string }>();
+    for (const gem of bitsSelectedGems) {
+      const runsForGem = bitsAllRuns.filter(r => r.gem_id === gem.id);
+      const latest = latestRunByCompany(runsForGem);
+      for (const [companyId, run] of latest) {
+        if (!byCompany.has(companyId) && run.captured_metrics && Object.keys(run.captured_metrics).length > 0) {
+          byCompany.set(companyId, { run, gemId: gem.id });
+        }
+      }
+    }
+    const m = new Map<string, (typeof bitsAllRuns)[number]>();
+    for (const [companyId, { run }] of byCompany) m.set(companyId, run);
+    if (m.size === 0) {
+      return latestRunByCompany(bitsAllRuns);
+    }
+    return m;
+  }, [bitsSelectedGems, bitsAllRuns]);
   const bitsTargetKey = useMemo(() => {
-    if (!bitsGem) return undefined;
-    const keys = metricStorageKeysForGem(bitsGem, bitsRuns);
-    const scored = keys
-      .map(k => {
-        const L = labelForMetricKey(bitsGem, k).toLowerCase();
-        let score = 0;
-        if (L.includes('target')) score += 3;
-        if (L.includes('price')) score += 2;
-        if (/target[_\s-]*price|price[_\s-]*target/.test(k.toLowerCase())) score += 2;
-        if (L.includes('10') || L.includes('ten')) score -= 2;
-        return { k, score };
-      })
-      .filter(x => x.score > 0)
-      .sort((a, b) => b.score - a.score);
-    return scored[0]?.k;
-  }, [bitsGem, bitsRuns]);
-  const showBitsDerived = Boolean(bitsGem);
+    if (bitsSelectedGems.length === 0) return undefined;
+    for (const gem of bitsSelectedGems) {
+      const runsForGem = bitsAllRuns.filter(r => r.gem_id === gem.id);
+      const keys = metricStorageKeysForGem(gem, runsForGem);
+      const scored = keys
+        .map(k => {
+          const L = labelForMetricKey(gem, k).toLowerCase();
+          let score = 0;
+          if (L.includes('target')) score += 3;
+          if (L.includes('price')) score += 2;
+          if (/target[_\s-]*price|price[_\s-]*target/.test(k.toLowerCase())) score += 2;
+          if (L.includes('10') || L.includes('ten')) score -= 2;
+          return { k, score };
+        })
+        .filter(x => x.score > 0)
+        .sort((a, b) => b.score - a.score);
+      if (scored[0]?.k) return scored[0].k;
+    }
+    return undefined;
+  }, [bitsSelectedGems, bitsAllRuns]);
+  const showBitsDerived = bitsSelectedGems.length > 0;
   const vcaRunsLoading = allRunsLoading || gemsLoading;
 
   const enrichedRows: EnrichedRow[] = useMemo(() => {
@@ -843,7 +861,7 @@ export default function MetricsComparePage() {
                   {showBitsDerived && (
                     <th
                       className="metric-col metrics-th-tip"
-                      data-tip="Downside Risk = 1 - (Blood in the Streets target price / last price)."
+                      data-tip="Downside Risk = 1 − (BITS — Asymmetric Alpha Analyst target price ÷ last price)."
                       onClick={() => toggleSort('bitsDownsideRisk')}
                     >
                       Downside Risk % (BITS){arrow('bitsDownsideRisk')}
@@ -852,7 +870,7 @@ export default function MetricsComparePage() {
                   {showBitsDerived && (
                     <th
                       className="metric-col metrics-th-tip"
-                      data-tip="10Y CAGR from Blood in the Streets target price to Value Compounding Analyst V3.3 10Y target price."
+                      data-tip="10Y CAGR from BITS (Asymmetric Alpha Analyst) target price to Value Compounding Analyst V3.3 10Y target price."
                       onClick={() => toggleSort('bitsToVcaTenYearCagr')}
                     >
                       10Y CAGR % (BITS→VCA){arrow('bitsToVcaTenYearCagr')}

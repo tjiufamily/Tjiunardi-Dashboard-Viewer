@@ -4,7 +4,7 @@ import { useScoresData } from '../hooks/useScores';
 import { useGems, useCompanyRuns } from '../hooks/useData';
 import { useStockQuotes } from '../hooks/useStockQuotes';
 import { SCORE_TYPES, SCORE_LABELS } from '../types';
-import type { CompanyScores } from '../types';
+import type { CompanyScores, GemRun, ScoreType } from '../types';
 import {
   calculatePositionSize,
   computeProbabilityMultiplier,
@@ -111,44 +111,47 @@ export default function PositionSizingPage() {
     if (!vcaGem || !selectedCompanyId) return undefined;
     return latestRunForGem(companyRuns, vcaGem.id);
   }, [vcaGem, companyRuns, selectedCompanyId]);
-  const bitsGem = useMemo(
-    () =>
-      gems.find(g =>
-        /(blood\s+in\s+the\s+streets?|bits\s+by\s+asymmetric\s+alpha\s+analyst|asymmetric\s+alpha\s+analyst)/i.test(
-          g.name ?? '',
-        ),
-      ),
-    [gems],
-  );
-  const latestBitsRun = useMemo(() => {
-    if (!bitsGem || !selectedCompanyId) return undefined;
-    return latestRunForGem(companyRuns, bitsGem.id);
-  }, [bitsGem, companyRuns, selectedCompanyId]);
+  const bitsGems = useMemo(() => {
+    return gems.filter(g => {
+      const n = (g.name ?? '').toLowerCase();
+      return /\bbits\b/.test(n) || /asymmetric\s*alpha\s*analyst/.test(n);
+    });
+  }, [gems]);
 
   const vcaOpts = useMemo(() => {
     const px = quoteSymbol ? quotes.get(normalizeTickerSymbol(quoteSymbol)) : undefined;
     return valueCompoundingCagrOptionsFromRun(vcaGem, latestVcaRun, px ?? null);
   }, [vcaGem, latestVcaRun, quotes, quoteSymbol]);
-  const bitsTargetPrice = useMemo(() => {
-    if (!bitsGem || !latestBitsRun?.captured_metrics) return null;
-    const keys = metricStorageKeysForGem(bitsGem, [latestBitsRun]);
-    const scored = keys
-      .map(k => {
-        const L = labelForMetricKey(bitsGem, k).toLowerCase();
-        let score = 0;
-        if (L.includes('target')) score += 3;
-        if (L.includes('price')) score += 2;
-        if (/target[_\s-]*price|price[_\s-]*target/.test(k.toLowerCase())) score += 2;
-        if (L.includes('10') || L.includes('ten')) score -= 2;
-        return { k, score };
-      })
-      .filter(x => x.score > 0)
-      .sort((a, b) => b.score - a.score);
-    const key = scored[0]?.k;
-    if (!key) return null;
-    const v = latestBitsRun.captured_metrics[key];
-    return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null;
-  }, [bitsGem, latestBitsRun]);
+
+  const { bitsTargetPrice, latestBitsRun } = useMemo(() => {
+    if (!selectedCompanyId || bitsGems.length === 0)
+      return { bitsTargetPrice: null as number | null, latestBitsRun: undefined as GemRun | undefined };
+
+    for (const gem of bitsGems) {
+      const run = latestRunForGem(companyRuns, gem.id);
+      if (!run?.captured_metrics) continue;
+      const keys = metricStorageKeysForGem(gem, [run]);
+      const scored = keys
+        .map(k => {
+          const L = labelForMetricKey(gem, k).toLowerCase();
+          let score = 0;
+          if (L.includes('target')) score += 3;
+          if (L.includes('price')) score += 2;
+          if (/target[_\s-]*price|price[_\s-]*target/.test(k.toLowerCase())) score += 2;
+          if (L.includes('10') || L.includes('ten')) score -= 2;
+          return { k, score };
+        })
+        .filter(x => x.score > 0)
+        .sort((a, b) => b.score - a.score);
+      const key = scored[0]?.k;
+      if (!key) continue;
+      const v = run.captured_metrics[key];
+      if (typeof v === 'number' && Number.isFinite(v) && v > 0) {
+        return { bitsTargetPrice: v, latestBitsRun: run };
+      }
+    }
+    return { bitsTargetPrice: null, latestBitsRun: undefined };
+  }, [selectedCompanyId, bitsGems, companyRuns]);
   const delayedPrice = useMemo(() => {
     if (!quoteSymbol) return null;
     return quotes.get(normalizeTickerSymbol(quoteSymbol)) ?? null;
@@ -191,6 +194,9 @@ export default function PositionSizingPage() {
     ...DEFAULT_PROBABILITY_TIERS,
   ]);
   const [probabilityAllBelow, setProbabilityAllBelow] = useState(DEFAULT_PROBABILITY_ALL_BELOW);
+  const [probabilityIncludedScoreTypes, setProbabilityIncludedScoreTypes] = useState<ScoreType[]>(() => [
+    ...PROBABILITY_SCORE_TYPES,
+  ]);
 
   const probabilityPreview = useMemo(
     () =>
@@ -198,14 +204,16 @@ export default function PositionSizingPage() {
         ? computeProbabilityMultiplier(selectedCompany.scores, {
             tiers: probabilityTiers,
             allBelow: probabilityAllBelow,
+            includedProbabilityScoreTypes: probabilityIncludedScoreTypes,
           })
         : null,
-    [selectedCompany, probabilityTiers, probabilityAllBelow],
+    [selectedCompany, probabilityTiers, probabilityAllBelow, probabilityIncludedScoreTypes],
   );
 
   const urlHydratedRef = useRef(false);
   const formStateHydratedRef = useRef(false);
   const sizingDefaultsLoaded = useRef(false);
+  const probabilitySettingsHydratedRef = useRef(false);
 
   const [downside, setDownside] = useState<string>('');
   const [downsidePrice, setDownsidePrice] = useState<string>('');
@@ -260,9 +268,16 @@ export default function PositionSizingPage() {
         const o = JSON.parse(rawP) as {
           probabilityTiers?: ProbabilityTierRule[];
           probabilityAllBelow?: number;
+          probabilityIncludedScoreTypes?: string[];
         };
         if (Array.isArray(o.probabilityTiers) && o.probabilityTiers.length) setProbabilityTiers(o.probabilityTiers);
         if (typeof o.probabilityAllBelow === 'number') setProbabilityAllBelow(o.probabilityAllBelow);
+        if (Array.isArray(o.probabilityIncludedScoreTypes)) {
+          const next = PROBABILITY_SCORE_TYPES.filter(st =>
+            o.probabilityIncludedScoreTypes!.includes(st),
+          );
+          setProbabilityIncludedScoreTypes(next);
+        }
       }
       const rawC = localStorage.getItem(LS_SIZING_CAGR);
       if (rawC) {
@@ -293,7 +308,24 @@ export default function PositionSizingPage() {
     } catch {
       /* ignore */
     }
+    probabilitySettingsHydratedRef.current = true;
   }, []);
+
+  useEffect(() => {
+    if (!probabilitySettingsHydratedRef.current) return;
+    try {
+      localStorage.setItem(
+        LS_SIZING_PROBABILITY,
+        JSON.stringify({
+          probabilityTiers,
+          probabilityAllBelow,
+          probabilityIncludedScoreTypes,
+        }),
+      );
+    } catch {
+      /* ignore */
+    }
+  }, [probabilityTiers, probabilityAllBelow, probabilityIncludedScoreTypes]);
 
   useEffect(() => {
     try {
@@ -324,12 +356,21 @@ export default function PositionSizingPage() {
     try {
       localStorage.setItem(
         LS_SIZING_PROBABILITY,
-        JSON.stringify({ probabilityTiers, probabilityAllBelow }),
+        JSON.stringify({ probabilityTiers, probabilityAllBelow, probabilityIncludedScoreTypes }),
       );
     } catch {
       /* ignore */
     }
-  }, [probabilityTiers, probabilityAllBelow]);
+  }, [probabilityTiers, probabilityAllBelow, probabilityIncludedScoreTypes]);
+
+  const toggleProbabilityMetricIncluded = useCallback((st: ScoreType) => {
+    setProbabilityIncludedScoreTypes(prev => {
+      const s = new Set(prev);
+      if (s.has(st)) s.delete(st);
+      else s.add(st);
+      return PROBABILITY_SCORE_TYPES.filter(x => s.has(x));
+    });
+  }, []);
 
   const saveCagrRulesDefault = useCallback(() => {
     try {
@@ -553,6 +594,7 @@ export default function PositionSizingPage() {
       avgSuperiorMaxPct,
       probabilityTiers,
       probabilityAllBelow,
+      includedProbabilityScoreTypes: probabilityIncludedScoreTypes,
       includeStage1: stageToggles.stage1,
       includeStage2: stageToggles.stage2,
       includeStage3: stageToggles.stage3,
@@ -572,6 +614,7 @@ export default function PositionSizingPage() {
     avgSuperiorMaxPct,
     probabilityTiers,
     probabilityAllBelow,
+    probabilityIncludedScoreTypes,
     stageToggles,
   ]);
 
@@ -642,8 +685,8 @@ export default function PositionSizingPage() {
                     compounding reduces how much capital you commit.
                   </li>
                   <li>
-                    <strong>Probability of happening</strong> — Applies a multiplier from checklist + quality scores
-                    (and their average), reflecting how likely the thesis is to play out.
+                    <strong>Probability of happening</strong> — Applies a multiplier from the quality metrics you
+                    include (and their average), reflecting how likely the thesis is to play out.
                   </li>
                   <li>
                     <strong>Downside haircut</strong> — Trims the result when expected drawdown is large, so you do not
@@ -671,8 +714,8 @@ export default function PositionSizingPage() {
           </label>
         </div>
         <p className="sizing-subtitle">
-          Select a company to see recommended position size from weighted scores, CAGR, probability (five quality
-          metrics + avg), then downside haircut. Adjustable rules can be saved as your defaults in this browser.
+          Select a company to see recommended position size from weighted scores, CAGR, probability (selected quality
+          metrics + their average), then downside haircut. Adjustable rules can be saved as your defaults in this browser.
         </p>
       </div>
 
@@ -705,10 +748,10 @@ export default function PositionSizingPage() {
               <div className="sizing-company-metrics-row">
                 <dt>Current price</dt>
                 <dd>
-                  {quotesLoading ? (
-                    <span className="sizing-metrics-pending">…</span>
-                  ) : delayedPrice != null && delayedPrice > 0 ? (
+                  {delayedPrice != null && delayedPrice > 0 ? (
                     fmt(delayedPrice, 2)
+                  ) : quotesLoading ? (
+                    <span className="sizing-metrics-pending">…</span>
                   ) : (
                     '—'
                   )}
@@ -850,32 +893,60 @@ export default function PositionSizingPage() {
               <span className="sizing-inline-tip" tabIndex={0}>
                 Probability of Happening
                 <span className="sizing-inline-tip-panel">
-                  Shows how likely your thesis is to play out, based on five quality metrics and their average.
+                  Choose which quality scores feed Stage 3 (default: all). The average uses only checked metrics.
                 </span>
               </span>
             </label>
+            <div className="sizing-probability-metrics-toolbar" role="toolbar" aria-label="Include metrics in probability">
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                onClick={() => setProbabilityIncludedScoreTypes([...PROBABILITY_SCORE_TYPES])}
+              >
+                Select all
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                onClick={() => setProbabilityIncludedScoreTypes([])}
+              >
+                Select none
+              </button>
+            </div>
             <dl className="sizing-probability-metrics">
               {PROBABILITY_SCORE_TYPES.map(st => {
                 const d = probabilityPreview.details.find(x => x.scoreType === st);
+                const checked = probabilityIncludedScoreTypes.includes(st);
                 return (
                   <div key={st} className="sizing-company-metrics-row">
                     <dt>
-                      <span className="sizing-inline-tip" tabIndex={0}>
-                        {SCORE_LABELS[st]}
-                        <span className="sizing-inline-tip-panel">{scoreColumnDescriptions[st]}</span>
-                      </span>
+                      <label className="sizing-probability-metric-label">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleProbabilityMetricIncluded(st)}
+                          aria-label={`Include ${SCORE_LABELS[st]} in probability`}
+                        />
+                        <span className="sizing-inline-tip" tabIndex={0}>
+                          {SCORE_LABELS[st]}
+                          <span className="sizing-inline-tip-panel">{scoreColumnDescriptions[st]}</span>
+                        </span>
+                      </label>
                     </dt>
-                    <dd>{d?.value != null ? fmt(d.value, 2) : '—'}</dd>
+                    <dd className={checked ? undefined : 'sizing-probability-dd-muted'}>
+                      {d?.value != null ? fmt(d.value, 2) : '—'}
+                    </dd>
                   </div>
                 );
               })}
               <div className="sizing-company-metrics-row">
                 <dt>
                   <span className="sizing-inline-tip" tabIndex={0}>
-                    Avg (5 metrics)
+                    Avg ({probabilityIncludedScoreTypes.length}{' '}
+                    {probabilityIncludedScoreTypes.length === 1 ? 'metric' : 'metrics'})
                     <span className="sizing-inline-tip-panel">
-                      Simple average of the five probability metrics. Used together with the individual scores for the
-                      rule check.
+                      Simple average of the selected probability metrics. Used with those scores for the tier rule
+                      check.
                     </span>
                   </span>
                 </dt>
@@ -1128,13 +1199,13 @@ export default function PositionSizingPage() {
               </button>
             </div>
             <p className="rules-hint">
-              Uses Stock Compounder Checklist, Terminal Value, Antifragile, Competitive Advantage, and Lollapalooza Moat
-              plus their average (six values total). Tiers are evaluated from the highest threshold first; all six must be{' '}
+              Uses the metrics you include on the main calculator (default: all five) plus their average — so N metrics
+              give N + 1 values vs. tiers. Tiers are evaluated from the highest threshold first; every value must be{' '}
               <strong>&gt;=</strong> the tier&apos;s threshold. If no tier matches and it is not the &quot;all below&quot;
-              multiplier is 0 (conservative).
+              case, multiplier is 0 (conservative).
             </p>
             <p className="rules-hint">
-              If all six &lt;{' '}
+              If all inputs &lt;{' '}
               <input
                 type="number"
                 step="0.5"
@@ -1147,7 +1218,7 @@ export default function PositionSizingPage() {
             <table className="rules-table">
               <thead>
                 <tr>
-                  <th>If all six &gt;=</th>
+                  <th>If all inputs &gt;=</th>
                   <th>Multiplier</th>
                   <th></th>
                 </tr>
@@ -1435,32 +1506,41 @@ export default function PositionSizingPage() {
               {stageFailure.stage3 ? <span className="sizing-stage-fail-tag">Failed: reduced to 0%</span> : null}
             </h4>
             <p className="stage-description">
-              Stock Compounder Checklist, Terminal Value, Antifragile, Competitive Advantage, and Lollapalooza Moat
-              scores contribute to the probability stage. The displayed <strong>Avg (5)</strong> is compared against your
-              probability tiers alongside the individual metrics (six values total) to set the multiplier. Applied after CAGR
-              and before downside.
+              Only metrics you include in <strong>Probability of Happening</strong> feed this stage. Their average is
+              compared with those scores against your probability tiers (N metrics + average = N + 1 values). Applied
+              after CAGR and before downside.
             </p>
             <table className="sizing-breakdown-table sizing-prob-mini-table">
               <thead>
                 <tr>
                   <th>Metric</th>
                   <th>Score</th>
+                  <th>In Stage 3</th>
                 </tr>
               </thead>
               <tbody>
                 {result.probabilityDetails.map(d => (
-                  <tr key={d.scoreType}>
+                  <tr
+                    key={d.scoreType}
+                    className={d.included ? undefined : 'sizing-prob-row--excluded'}
+                  >
                     <td>{SCORE_LABELS[d.scoreType]}</td>
                     <td className="num">{d.value != null ? fmt(d.value, 2) : '—'}</td>
+                    <td>{d.included ? 'Yes' : '—'}</td>
                   </tr>
                 ))}
                 <tr>
                   <td>
-                    <strong>Avg (5)</strong>
+                    <strong>
+                      Avg (
+                      {result.probabilityDetails.filter(x => x.included).length}{' '}
+                      {result.probabilityDetails.filter(x => x.included).length === 1 ? 'metric' : 'metrics'})
+                    </strong>
                   </td>
                   <td className="num">
                     {result.probabilityAverage != null ? fmt(result.probabilityAverage, 2) : '—'}
                   </td>
+                  <td>—</td>
                 </tr>
               </tbody>
             </table>

@@ -54,7 +54,7 @@ export async function fetchAllGemRunsByCreatedAtDesc(): Promise<GemRun[]> {
   return all;
 }
 
-/** Runs used by scores hook: weighted scores or captured metrics, score_type set. */
+/** Runs used by scores hook: all runs with weighted_score (score_type may be null — inferred from gem name). */
 export async function fetchAllScoresGemRuns(): Promise<GemRun[]> {
   const all: GemRun[] = [];
   let offset = 0;
@@ -62,8 +62,7 @@ export async function fetchAllScoresGemRuns(): Promise<GemRun[]> {
     const { data, error } = await supabase
       .from('gem_runs')
       .select('*')
-      .or('weighted_score.not.is.null,captured_metrics.not.is.null')
-      .not('score_type', 'is', null)
+      .not('weighted_score', 'is', null)
       .order('completed_at', { ascending: false })
       .range(offset, offset + PAGE_SIZE - 1);
     if (error) throw error;

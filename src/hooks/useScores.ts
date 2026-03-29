@@ -12,13 +12,85 @@ const SCORE_TYPE_ALIASES: Record<string, ScoreType> = {
   wb_financial_analyst: 'wb_financial',
   financial_JT: 'financial',
   financial_jt: 'financial',
+  compounder_checklist_JT: 'compounder_checklist',
+  compounder_checklist_jt: 'compounder_checklist',
+  stock_compounder_checklist: 'compounder_checklist',
+  stock_compounder_checklist_JT: 'compounder_checklist',
+  stock_compounder_checklist_jt: 'compounder_checklist',
+  terminal_value_JT: 'terminal_value',
+  terminal_value_jt: 'terminal_value',
+  terminal_value_alpha_forensic: 'terminal_value',
+  terminal_value_alpha_forensic_JT: 'terminal_value',
+  terminal_value_alpha_forensic_jt: 'terminal_value',
+  alpha_forensic: 'terminal_value',
+  checklist_JT: 'checklist',
+  checklist_jt: 'checklist',
+  competitive_advantage_JT: 'competitive_advantage',
+  competitive_advantage_jt: 'competitive_advantage',
+  moat_JT: 'moat',
+  moat_jt: 'moat',
+  lollapalooza_moat: 'moat',
+  lollapalooza_moat_JT: 'moat',
+  lollapalooza_moat_jt: 'moat',
 };
 
 function canonicalScoreType(scoreType: string | null | undefined): ScoreType | null {
   if (!scoreType) return null;
   if (SCORE_TYPES.includes(scoreType as ScoreType)) return scoreType as ScoreType;
   const mapped = SCORE_TYPE_ALIASES[scoreType] ?? SCORE_TYPE_ALIASES[scoreType.toLowerCase()];
-  return mapped ?? null;
+  if (mapped) return mapped;
+
+  // Aggressive normalization: strip everything except a-z0-9, collapse to underscores.
+  // "Stock Compounder Checklist" → "stock_compounder_checklist"
+  // "Terminal Value - Alpha & Forensic" → "terminal_value_alpha_forensic"
+  const norm = scoreType.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+  if (SCORE_TYPES.includes(norm as ScoreType)) return norm as ScoreType;
+  const fromNorm = SCORE_TYPE_ALIASES[norm];
+  if (fromNorm) return fromNorm;
+
+  // Fuzzy keyword match as last resort
+  const lc = scoreType.toLowerCase();
+  if (/compounder/.test(lc) && /checklist/.test(lc)) return 'compounder_checklist';
+  if (/terminal/.test(lc) && /value/.test(lc)) return 'terminal_value';
+  if (/anti\s*fragile/i.test(lc)) return 'antifragile';
+  if (/competitive/.test(lc) && /advantage/.test(lc)) return 'competitive_advantage';
+  if (/moat/.test(lc) || /lollapalooza/.test(lc)) return 'moat';
+  if (/\bwb\b/.test(lc) && /financial/.test(lc)) return 'wb_financial';
+  if (/financial/.test(lc)) return 'financial';
+  if (/\bchecklist\b/.test(lc)) return 'checklist';
+
+  return null;
+}
+
+/**
+ * When `score_type` is NULL on a gem_run, try to infer it from the gem or run name.
+ * E.g. a gem named "Stock Compounder Checklist" → `compounder_checklist`.
+ */
+function inferScoreTypeFromName(name: string | null | undefined): ScoreType | null {
+  if (!name) return null;
+  const lc = name.toLowerCase();
+  if (/compounder/.test(lc) && /checklist/.test(lc)) return 'compounder_checklist';
+  if (/terminal/.test(lc) && /value/.test(lc)) return 'terminal_value';
+  if (/anti\s*fragile/i.test(lc)) return 'antifragile';
+  if (/competitive/.test(lc) && /advantage/.test(lc)) return 'competitive_advantage';
+  if (/lollapalooza/.test(lc) || (/moat/.test(lc) && !/business/i.test(lc))) return 'moat';
+  if (/\bwb\b/.test(lc) && /financial/.test(lc)) return 'wb_financial';
+  if (/\bfinancial\b/.test(lc) && /score/i.test(lc)) return 'financial';
+  if (/\bchecklist\b/.test(lc) && !/compounder/.test(lc)) return 'checklist';
+  return null;
+}
+
+/** Resolve score type: explicit `score_type` column → gem name inference → null. */
+function resolveScoreType(
+  scoreType: string | null | undefined,
+  gemName: string | null | undefined,
+  gemFromDb: Gem | undefined,
+): ScoreType | null {
+  const fromExplicit = canonicalScoreType(scoreType);
+  if (fromExplicit) return fromExplicit;
+  const fromRunName = inferScoreTypeFromName(gemName);
+  if (fromRunName) return fromRunName;
+  return inferScoreTypeFromName(gemFromDb?.name);
 }
 
 /**
@@ -38,7 +110,7 @@ function buildScoreColumnDescriptions(
   const gemById = new Map(gems.map(g => [g.id, g]));
   const bestGemId = new Map<ScoreType, { id: string; t: string }>();
   for (const r of runs) {
-    const st = canonicalScoreType(r.score_type);
+    const st = resolveScoreType(r.score_type, r.gem_name, gemById.get(r.gem_id));
     if (st == null || !r.gem_id) continue;
     const t = r.completed_at ?? r.created_at ?? '';
     const prev = bestGemId.get(st);
@@ -96,9 +168,22 @@ export function useScoresData() {
   );
 
   const companyScores = useMemo((): CompanyScores[] => {
+    const gemById = new Map(gems.map(g => [g.id, g]));
+
+    // Debug: log score_type resolution including gem-name inference
+    if (runs.length > 0) {
+      const resolved = new Map<string, string>();
+      for (const r of runs) {
+        const src = r.score_type ?? `(null → gem: ${r.gem_name ?? gemById.get(r.gem_id)?.name ?? '?'})`;
+        const st = resolveScoreType(r.score_type, r.gem_name, gemById.get(r.gem_id));
+        if (!resolved.has(src)) resolved.set(src, st ?? '(UNMAPPED)');
+      }
+      console.log('[useScores] score_type resolution:', Object.fromEntries(resolved));
+    }
+
     const latestByKey = new Map<string, GemRun>();
     for (const r of runs) {
-      const st = canonicalScoreType(r.score_type);
+      const st = resolveScoreType(r.score_type, r.gem_name, gemById.get(r.gem_id));
       if (st == null || r.weighted_score == null) continue;
       const key = `${r.company_id}::${st}`;
       const existing = latestByKey.get(key);
@@ -111,7 +196,7 @@ export function useScoresData() {
     const grouped = new Map<string, Partial<Record<ScoreType, { raw: number; norm: number }>>>();
 
     for (const [, run] of latestByKey) {
-      const st = canonicalScoreType(run.score_type);
+      const st = resolveScoreType(run.score_type, run.gem_name, gemById.get(run.gem_id));
       if (st == null) continue;
       const raw = run.weighted_score;
       if (raw == null) continue;
