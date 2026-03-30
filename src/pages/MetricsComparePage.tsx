@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import { useState, useMemo, useEffect, useCallback, useLayoutEffect, useRef } from 'react';
 import { useSearchParams, useNavigate, Link, useLocation } from 'react-router-dom';
 import { useCompanies, useGems, useAllRuns } from '../hooks/useData';
 import { useScoresData } from '../hooks/useScores';
@@ -234,6 +234,8 @@ export default function MetricsComparePage() {
   const [priceOverrides, setPriceOverrides] = useState<Record<string, number>>(loadPriceOverrides);
 
   const defaultMetricsGemAppliedRef = useRef(false);
+
+  const tableWrapRef = useRef<HTMLDivElement | null>(null);
 
   const setManualLastPrice = useCallback((companyId: string, price: number | null) => {
     setPriceOverrides(prev => {
@@ -517,6 +519,32 @@ export default function MetricsComparePage() {
   }, [bitsSelectedGems, bitsAllRuns]);
   const showBitsDerived = bitsSelectedGems.length > 0;
   const vcaRunsLoading = allRunsLoading || gemsLoading;
+
+  // Sticky header rows: measure title row height so the filter row doesn't overlap.
+  useLayoutEffect(() => {
+    const wrap = tableWrapRef.current;
+    if (!wrap) return;
+
+    const update = () => {
+      const table = wrap.querySelector('table.scores-table') as HTMLTableElement | null;
+      const firstRow = table?.querySelector('thead tr:first-child') as HTMLTableRowElement | null;
+      if (!firstRow) return;
+      const h = firstRow.getBoundingClientRect().height;
+      if (h > 0 && Number.isFinite(h)) {
+        wrap.style.setProperty('--scores-sticky-first-row-h', `${h}px`);
+      }
+    };
+
+    update();
+    const ro = new ResizeObserver(() => update());
+    ro.observe(wrap);
+    window.addEventListener('resize', update);
+
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', update);
+    };
+  }, [showWeightedScores, selectedGemIds.length, metricColumns.length, showBitsDerived]);
 
   const enrichedRows: EnrichedRow[] = useMemo(() => {
     return rows.map(r => {
@@ -884,7 +912,7 @@ export default function MetricsComparePage() {
               No metric keys found in capture config or runs. Weighted scores still show when available.
             </p>
           )}
-          <div className="scores-table-wrap">
+          <div className="scores-table-wrap" ref={tableWrapRef}>
             <table className="scores-table metrics-compare-table scores-table--min-filters">
               <thead>
                 <tr>

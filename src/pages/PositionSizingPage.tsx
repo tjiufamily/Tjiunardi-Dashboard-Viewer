@@ -65,6 +65,8 @@ const STAGED_COL_TIP = {
     'Tip: Slice of Stage 3 cap. Formula: (units ÷ 10) × 100% → 10%, 20%, 30%, 40%.',
   portfolioPct:
     'Tip: Portfolio % this tranche. Formula: (Stage 3 %) × (units ÷ 10). Four rows sum to Stage 3 %.',
+  cagrToTenYearTarget:
+    'Tip: CAGR (annualized) from this row’s scale-in price to your 10Y target price over 10 years.',
 } as const;
 
 /** Native `title` tooltips — custom CSS panels are clipped by the table scroll container. */
@@ -205,6 +207,30 @@ export default function PositionSizingPage() {
       delayedPrice != null && delayedPrice > 0 ? delayedPrice * multiple : null;
     return { priceYr10, multiple };
   }, [cagr, delayedPrice]);
+
+  const cagrSliderConfig = useMemo(() => {
+    const presetVals = [
+      effectiveImpliedCagr(vcaOpts),
+      vcaOpts.baseCase,
+      vcaOpts.tenYearTotalCagr,
+      vcaOpts.fiveYearValueCompounding,
+    ].filter((v): v is number => v != null && Number.isFinite(v));
+    const current = parseFloat(cagr);
+    const values = Number.isFinite(current) ? [...presetVals, current] : presetVals;
+
+    const rawMin = values.length > 0 ? Math.min(...values, 0) : 0;
+    const rawMax = values.length > 0 ? Math.max(...values, 30) : 30;
+
+    const min = Math.floor(rawMin);
+    const max = Math.ceil(rawMax);
+    const safeMax = max > min ? max : min + 1;
+    const sliderValue = Number.isFinite(current) ? current : min;
+    return {
+      min,
+      max: safeMax,
+      value: Math.max(min, Math.min(safeMax, sliderValue)),
+    };
+  }, [cagr, vcaOpts]);
 
   const [companyFilter, setCompanyFilter] = useState('');
   const displayCompanies = useMemo(() => {
@@ -675,6 +701,31 @@ export default function PositionSizingPage() {
     return computeStagedTranchePlan(result.afterProbability, downsideAnchorPrice);
   }, [result, downsideAnchorPrice]);
 
+  const ladderWeightedAvg = useMemo(() => {
+    if (!stagedTranchePlan) return null;
+    const target = vcaOpts.tenYearTargetPrice;
+    const unitsTotal = stagedTranchePlan.rows.reduce((s, r) => s + r.addUnits, 0);
+
+    const allPricesValid = stagedTranchePlan.rows.every(r => r.price != null && r.price > 0);
+    if (!allPricesValid || unitsTotal <= 0) {
+      return {
+        weightedAvgScaleInPrice: null as number | null,
+        unitsTotal,
+        cagrToTenYearTarget: null as number | null,
+      };
+    }
+
+    const weightedSum = stagedTranchePlan.rows.reduce((s, r) => s + (r.price as number) * r.addUnits, 0);
+    const weightedAvgScaleInPrice = weightedSum / unitsTotal;
+
+    const cagrToTenYearTarget =
+      target != null && target > 0
+        ? impliedCagrPercentFromPrices(weightedAvgScaleInPrice, target, 10)
+        : null;
+
+    return { weightedAvgScaleInPrice, unitsTotal, cagrToTenYearTarget };
+  }, [stagedTranchePlan, vcaOpts.tenYearTargetPrice]);
+
   const exportMarkdown = async () => {
     if (!selectedCompany || !result) return;
     const md = buildPositionSizingMarkdown(selectedCompany, cagr, downside, result, {
@@ -890,6 +941,29 @@ export default function PositionSizingPage() {
               }}
               className="sizing-input"
             />
+            <div className="sizing-cagr-slider-wrap">
+              <div className="sizing-cagr-slider-head">
+                <span>CAGR slider</span>
+                <strong>{fmtPct(cagrSliderConfig.value, 2)}</strong>
+              </div>
+              <input
+                type="range"
+                min={cagrSliderConfig.min}
+                max={cagrSliderConfig.max}
+                step={0.1}
+                value={cagrSliderConfig.value}
+                className="sizing-cagr-slider"
+                onChange={e => {
+                  setCagr(Number(parseFloat(e.target.value).toFixed(4)).toString());
+                  setCagrSource('custom');
+                }}
+                aria-label="CAGR slider for 10 years"
+              />
+              <div className="sizing-cagr-slider-scale">
+                <span>{fmtPct(cagrSliderConfig.min, 0)}</span>
+                <span>{fmtPct(cagrSliderConfig.max, 0)}</span>
+              </div>
+            </div>
             {cagrProjection.multiple != null ? (
               <dl className="sizing-cagr-projection">
                 <div className="sizing-company-metrics-row">
@@ -1704,6 +1778,12 @@ export default function PositionSizingPage() {
                           tip={STAGED_COL_TIP.portfolioPct}
                         />
                       </th>
+                      <th scope="col" className="num">
+                        <StagedColHead
+                          label="CAGR to 10Y target"
+                          tip={STAGED_COL_TIP.cagrToTenYearTarget}
+                        />
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1731,6 +1811,14 @@ export default function PositionSizingPage() {
                         <StagedTd tip={STAGED_COL_TIP.portfolioPct} className="num">
                           {fmt(r.portfolioAllocationPct, 2)}%
                         </StagedTd>
+                        <StagedTd tip={STAGED_COL_TIP.cagrToTenYearTarget} className="num">
+                          {vcaOpts.tenYearTargetPrice != null && r.price != null
+                            ? (() => {
+                                const v = impliedCagrPercentFromPrices(r.price, vcaOpts.tenYearTargetPrice, 10);
+                                return v != null ? fmtPct(v, 2) : '—';
+                              })()
+                            : '—'}
+                        </StagedTd>
                       </tr>
                     ))}
                   </tbody>
@@ -1738,6 +1826,12 @@ export default function PositionSizingPage() {
                     <tr className="sizing-staged-total-row">
                       <td colSpan={4}>
                         <strong>Total (if all tranches filled)</strong>
+                        {ladderWeightedAvg != null && ladderWeightedAvg.weightedAvgScaleInPrice != null ? (
+                          <div className="sizing-staged-total-note">
+                            Weighted avg scale-in: {fmt(ladderWeightedAvg.weightedAvgScaleInPrice, 2)}{' '}
+                            ({ladderWeightedAvg.unitsTotal} units)
+                          </div>
+                        ) : null}
                       </td>
                       <td className="num">
                         <strong>{fmt(stagedTranchePlan.totalPositionRecommendationPct, 2)}%</strong>
@@ -1747,6 +1841,13 @@ export default function PositionSizingPage() {
                             ({fmt(stagedTranchePlan.totalVsStage3Ratio * 100, 0)}% of Stage 3 cap)
                           </span>
                         ) : null}
+                      </td>
+                      <td className="num">
+                        <strong>
+                          {ladderWeightedAvg != null && ladderWeightedAvg.cagrToTenYearTarget != null
+                            ? fmtPct(ladderWeightedAvg.cagrToTenYearTarget, 2)
+                            : '—'}
+                        </strong>
                       </td>
                     </tr>
                   </tfoot>

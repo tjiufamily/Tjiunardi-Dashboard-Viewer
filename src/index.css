@@ -1158,7 +1158,9 @@ a.btn { text-decoration: none; color: inherit; }
 .threshold-input:focus { outline: none; border-color: var(--accent); }
 
 .scores-table-wrap {
-  overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-lg);
+  overflow: auto;
+  max-height: clamp(420px, calc(100dvh - var(--header-h) - 140px), 82dvh);
+  border: 1px solid var(--border); border-radius: var(--radius-lg);
   background: var(--bg-surface);
 }
 .scores-table {
@@ -1170,9 +1172,10 @@ a.btn { text-decoration: none; color: inherit; }
   border-bottom: 1px solid var(--border);
 }
 .scores-table th {
-  background: var(--bg-secondary); font-weight: 600; cursor: pointer;
+  background: #0b1220; font-weight: 600; cursor: pointer;
   user-select: none; position: sticky; top: 0; z-index: 2;
   font-size: 0.78rem; color: var(--text-secondary); letter-spacing: 0.02em;
+  background-clip: padding-box;
 }
 .scores-table th.score-type-heading {
   white-space: normal; line-height: 1.25; vertical-align: bottom;
@@ -1183,8 +1186,10 @@ a.btn { text-decoration: none; color: inherit; }
   z-index: 6;
 }
 .scores-table--min-filters thead tr.scores-min-filter-row th {
-  top: 2.85rem;
+  /* Set dynamically from JS (see Scores/metrics pages) to avoid overlap on different screen sizes. */
+  top: var(--scores-sticky-first-row-h, 3.35rem);
   z-index: 5;
+  background: #0b1220;
   cursor: default;
   font-weight: 500;
   padding-top: 6px;
@@ -1309,7 +1314,7 @@ a.btn { text-decoration: none; color: inherit; }
 }
 .scores-table th.sticky-action {
   z-index: 8;
-  background: var(--bg-secondary);
+  background: #0b1220;
 }
 .scores-table .sticky-after-action {
   text-align: left;
@@ -1321,7 +1326,7 @@ a.btn { text-decoration: none; color: inherit; }
 }
 .scores-table th.sticky-after-action {
   z-index: 7;
-  background: var(--bg-secondary);
+  background: #0b1220;
   box-shadow: 4px 0 8px -4px rgba(0, 0, 0, 0.35);
 }
 .scores-table th:hover { color: var(--text-primary); }
@@ -2053,6 +2058,36 @@ a.btn { text-decoration: none; color: inherit; }
   opacity: 0.45;
   cursor: not-allowed;
 }
+.sizing-cagr-slider-wrap {
+  margin-top: 8px;
+  padding: 8px 10px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--bg-surface) 88%, transparent);
+}
+.sizing-cagr-slider-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+.sizing-cagr-slider-head strong {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.sizing-cagr-slider {
+  width: 100%;
+}
+.sizing-cagr-slider-scale {
+  margin-top: 4px;
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
 .sizing-export {
   margin-top: 24px;
   padding-top: 20px;
@@ -2258,12 +2293,21 @@ a.btn { text-decoration: none; color: inherit; }
   margin-top: -6px;
 }
 .sizing-staged-table-wrap {
-  overflow-x: auto;
+  overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
+}
+.sizing-staged-tranche-table {
+  table-layout: fixed;
+  width: 100%;
 }
 .sizing-staged-tranche-table th,
 .sizing-staged-tranche-table td {
-  white-space: nowrap;
+  white-space: normal;
+  word-break: break-word;
+  padding: 7px 8px;
+}
+.sizing-staged-tranche-table .num {
+  text-align: left;
 }
 .sizing-staged-tranche-table thead th {
   position: relative;

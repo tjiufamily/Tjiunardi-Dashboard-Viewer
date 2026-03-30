@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useScoresData } from '../hooks/useScores';
 import { SCORE_TYPES, SCORE_LABELS } from '../types';
@@ -25,6 +25,8 @@ export default function ScoresPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const returnTo = currentRouteWithSearch(location.pathname, location.search);
+
+  const tableWrapRef = useRef<HTMLDivElement | null>(null);
 
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
@@ -105,6 +107,34 @@ export default function ScoresPage() {
 
   const colSpan = SCORE_TYPES.length + 4;
 
+  // Sticky header (title row + filter row) needs a correct "stacked" offset.
+  // We measure the first header row height and pin the filter row right beneath it.
+  useLayoutEffect(() => {
+    const wrap = tableWrapRef.current;
+    if (!wrap) return;
+
+    const update = () => {
+      const table = wrap.querySelector('table.scores-table') as HTMLTableElement | null;
+      const firstRow = table?.querySelector('thead tr:first-child') as HTMLTableRowElement | null;
+      if (!firstRow) return;
+      const h = firstRow.getBoundingClientRect().height;
+      if (h > 0 && Number.isFinite(h)) {
+        wrap.style.setProperty('--scores-sticky-first-row-h', `${h}px`);
+      }
+    };
+
+    update();
+
+    const ro = new ResizeObserver(() => update());
+    ro.observe(wrap);
+    window.addEventListener('resize', update);
+
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', update);
+    };
+  }, []);
+
   if (loading) {
     return (
       <div className="page-loading">
@@ -130,7 +160,7 @@ export default function ScoresPage() {
         </button>
       </div>
 
-      <div className="scores-table-wrap">
+      <div className="scores-table-wrap" ref={tableWrapRef}>
         <table className="scores-table scores-table--min-filters">
           <thead>
             <tr>
