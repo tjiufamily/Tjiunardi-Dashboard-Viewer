@@ -52,6 +52,40 @@ const LS_SIZING_DOWNSIDE = 'tjiunardi.dashboard.sizing.downside.v1';
 const LS_SIZING_PROBABILITY = 'tjiunardi.dashboard.sizing.probability.v1';
 const LS_SIZING_STAGE_TOGGLES = 'tjiunardi.dashboard.sizing.stageToggles.v1';
 const LS_SIZING_FORM = 'tjiunardi.dashboard.sizing.form.v1';
+const LS_SIZING_FAVOURITES = 'tjiunardi.dashboard.sizing.favourites.v1';
+const MAX_FAVOURITES = 7;
+
+type PositionSizingFavouriteSettings = {
+  cagr: string;
+  cagrSource: CagrSource;
+  downside: string;
+  downsidePrice: string;
+  avgSuperiorThreshold: number;
+  avgSuperiorMaxPct: number;
+  probabilityTiers: ProbabilityTierRule[];
+  probabilityAllBelow: number;
+  probabilityIncludedScoreTypes: ScoreType[];
+  scoreBrackets: ScoreThreshold[];
+  floorScore: number;
+  baseMax: number;
+  cagrBrackets: CagrBracket[];
+  cagrFloor: number;
+  downsideBrackets: DownsideBracket[];
+  stageToggles: {
+    stage1: boolean;
+    stage2: boolean;
+    stage3: boolean;
+    stage4: boolean;
+  };
+};
+
+type PositionSizingFavourite = {
+  companyId: string;
+  companyName: string;
+  ticker: string;
+  savedAt: string;
+  settings: PositionSizingFavouriteSettings;
+};
 
 /** Hover tips (formulas) — reused on header and body cells for each column. */
 const STAGED_COL_TIP = {
@@ -305,6 +339,8 @@ export default function PositionSizingPage() {
     stage3: true,
     stage4: true,
   });
+  const [favourites, setFavourites] = useState<PositionSizingFavourite[]>([]);
+  const [favouritesHydrated, setFavouritesHydrated] = useState(false);
 
   useEffect(() => {
     if (sizingDefaultsLoaded.current) return;
@@ -451,6 +487,41 @@ export default function PositionSizingPage() {
   }, [downsideBrackets]);
 
   useEffect(() => {
+    try {
+      const raw = localStorage.getItem(LS_SIZING_FAVOURITES);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as PositionSizingFavourite[];
+      if (!Array.isArray(parsed)) return;
+      setFavourites(
+        parsed
+          .filter(
+            fav =>
+              fav &&
+              typeof fav.companyId === 'string' &&
+              typeof fav.companyName === 'string' &&
+              typeof fav.ticker === 'string' &&
+              typeof fav.savedAt === 'string' &&
+              fav.settings != null,
+          )
+          .slice(0, MAX_FAVOURITES),
+      );
+    } catch {
+      /* ignore */
+    } finally {
+      setFavouritesHydrated(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!favouritesHydrated) return;
+    try {
+      localStorage.setItem(LS_SIZING_FAVOURITES, JSON.stringify(favourites));
+    } catch {
+      /* ignore */
+    }
+  }, [favourites, favouritesHydrated]);
+
+  useEffect(() => {
     const cParam = searchParams.get('company') ?? '';
     const cagrParam = searchParams.get('cagr');
     const srcParam = searchParams.get('cagrSrc');
@@ -585,6 +656,97 @@ export default function PositionSizingPage() {
     setDownsidePrice('');
     setSearchParams(id ? { company: id } : {});
   };
+
+  const selectedIsFavourite = useMemo(
+    () => favourites.some(f => f.companyId === selectedCompanyId),
+    [favourites, selectedCompanyId],
+  );
+
+  const makeFavouriteSettings = useCallback((): PositionSizingFavouriteSettings => {
+    return {
+      cagr,
+      cagrSource,
+      downside,
+      downsidePrice,
+      avgSuperiorThreshold,
+      avgSuperiorMaxPct,
+      probabilityTiers,
+      probabilityAllBelow,
+      probabilityIncludedScoreTypes,
+      scoreBrackets,
+      floorScore,
+      baseMax,
+      cagrBrackets,
+      cagrFloor,
+      downsideBrackets,
+      stageToggles,
+    };
+  }, [
+    cagr,
+    cagrSource,
+    downside,
+    downsidePrice,
+    avgSuperiorThreshold,
+    avgSuperiorMaxPct,
+    probabilityTiers,
+    probabilityAllBelow,
+    probabilityIncludedScoreTypes,
+    scoreBrackets,
+    floorScore,
+    baseMax,
+    cagrBrackets,
+    cagrFloor,
+    downsideBrackets,
+    stageToggles,
+  ]);
+
+  const handleSaveFavourite = useCallback(() => {
+    if (!selectedCompany) return;
+    const nextFavourite: PositionSizingFavourite = {
+      companyId: selectedCompany.companyId,
+      companyName: selectedCompany.companyName,
+      ticker: selectedCompany.ticker,
+      savedAt: new Date().toISOString(),
+      settings: makeFavouriteSettings(),
+    };
+    setFavourites(prev => {
+      const withoutCurrent = prev.filter(f => f.companyId !== nextFavourite.companyId);
+      return [nextFavourite, ...withoutCurrent].slice(0, MAX_FAVOURITES);
+    });
+  }, [makeFavouriteSettings, selectedCompany]);
+
+  const handleDeleteFavourite = useCallback((companyId: string) => {
+    setFavourites(prev => prev.filter(f => f.companyId !== companyId));
+  }, []);
+
+  const handleApplyFavourite = useCallback(
+    (fav: PositionSizingFavourite) => {
+      setSelectedCompanyId(fav.companyId);
+      setCompanyFilter('');
+      setCagr(fav.settings.cagr);
+      setCagrSource(fav.settings.cagrSource);
+      setDownside(fav.settings.downside);
+      setDownsidePrice(fav.settings.downsidePrice);
+      setAvgSuperiorThreshold(fav.settings.avgSuperiorThreshold);
+      setAvgSuperiorMaxPct(fav.settings.avgSuperiorMaxPct);
+      setProbabilityTiers(fav.settings.probabilityTiers);
+      setProbabilityAllBelow(fav.settings.probabilityAllBelow);
+      setProbabilityIncludedScoreTypes(fav.settings.probabilityIncludedScoreTypes);
+      setScoreBrackets(fav.settings.scoreBrackets);
+      setFloorScore(fav.settings.floorScore);
+      setBaseMax(fav.settings.baseMax);
+      setCagrBrackets(fav.settings.cagrBrackets);
+      setCagrFloor(fav.settings.cagrFloor);
+      setDownsideBrackets(fav.settings.downsideBrackets);
+      setStageToggles(fav.settings.stageToggles);
+      setSearchParams({
+        company: fav.companyId,
+        cagr: fav.settings.cagr,
+        cagrSrc: fav.settings.cagrSource,
+      });
+    },
+    [setSearchParams],
+  );
 
   const applyDownsidePct = useCallback(
     (s: string) => {
@@ -822,7 +984,18 @@ export default function PositionSizingPage() {
       {/* Company selector + manual inputs */}
       <div className="sizing-inputs-row">
         <div className="sizing-field sizing-field--company">
-          <label>Company</label>
+          <div className="sizing-company-label-row">
+            <label>Company</label>
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost sizing-favourite-save-btn"
+              disabled={!selectedCompanyId}
+              onClick={handleSaveFavourite}
+              title={selectedCompanyId ? 'Save current company settings as favourite' : 'Select a company first'}
+            >
+              {selectedIsFavourite ? 'Update Favourite' : 'Make Favourite'}
+            </button>
+          </div>
           <input
             type="search"
             placeholder="Search name or ticker…"
@@ -873,6 +1046,57 @@ export default function PositionSizingPage() {
           ) : selectedCompanyId && !gemsLoading ? (
             <p className="sizing-company-metrics-note">No Value Compounding Analyst gem — target-based metrics unavailable.</p>
           ) : null}
+          <div className="sizing-favourites-panel">
+            <div className="sizing-favourites-header">
+              <span>Favourites</span>
+              <span className="sizing-favourites-cap">
+                {favourites.length}/{MAX_FAVOURITES}
+              </span>
+            </div>
+            {favourites.length === 0 ? (
+              <p className="sizing-favourites-empty">
+                Save 5-7 frequently researched companies to quickly load all settings.
+              </p>
+            ) : (
+              <div className="sizing-favourites-list" role="list" aria-label="Saved favourite companies">
+                {favourites.map(fav => {
+                  const activeStages = [
+                    fav.settings.stageToggles.stage1,
+                    fav.settings.stageToggles.stage2,
+                    fav.settings.stageToggles.stage3,
+                    fav.settings.stageToggles.stage4,
+                  ].filter(Boolean).length;
+                  return (
+                    <div key={fav.companyId} className="sizing-favourite-item" role="listitem">
+                      <button
+                        type="button"
+                        className={`sizing-favourite-load ${fav.companyId === selectedCompanyId ? 'active' : ''}`}
+                        onClick={() => handleApplyFavourite(fav)}
+                        title="Load saved settings for this company"
+                      >
+                        <span className="sizing-favourite-title">
+                          {fav.companyName} ({fav.ticker})
+                        </span>
+                        <span className="sizing-favourite-meta">
+                          CAGR {fav.settings.cagr || '—'}% | Downside {fav.settings.downside || '—'}% | Prob{' '}
+                          {fav.settings.probabilityIncludedScoreTypes.length} metrics | Stages {activeStages}/4
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-icon sizing-favourite-delete"
+                        aria-label={`Delete favourite ${fav.companyName}`}
+                        title="Delete favourite"
+                        onClick={() => handleDeleteFavourite(fav.companyId)}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
         {selectedCompanyId ? (
           <div className="sizing-field sizing-field--cagr">
