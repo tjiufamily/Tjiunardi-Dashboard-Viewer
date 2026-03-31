@@ -1429,6 +1429,22 @@ a.btn { text-decoration: none; color: inherit; }
   display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px;
   flex: 1; min-width: 280px;
 }
+.metrics-filter-presets {
+  width: 100%;
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding-top: 10px;
+  margin-top: 2px;
+  border-top: 1px solid var(--border);
+}
+.metrics-filter-presets-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
 .metrics-gem-label { font-size: 0.85rem; font-weight: 600; color: var(--text-secondary); }
 .metrics-gem-picker {
   display: inline-flex;

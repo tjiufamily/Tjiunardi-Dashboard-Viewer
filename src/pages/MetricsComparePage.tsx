@@ -389,6 +389,99 @@ export default function MetricsComparePage() {
     return cols;
   }, [selectedGems, selectedRunsByGem]);
 
+  const findMetricFilterKeyByLabel = useCallback(
+    (match: (labelLower: string) => boolean): string | null => {
+      const col = metricColumns.find(c => match((c.label ?? '').toLowerCase()));
+      return col ? `metric:${col.id}` : null;
+    },
+    [metricColumns],
+  );
+
+  /** Pre-fills header filters; users can still edit values and Min/Max toggles afterward. */
+  const applyLowDownsideCompoundersPreset = useCallback(() => {
+    setSearch('');
+    setColumnMins({
+      'extra:bitsDownsideRisk': '15',
+      'score:compounder_checklist': '8.5',
+    });
+    setColumnBoundModes({
+      'extra:bitsDownsideRisk': 'max',
+      'score:compounder_checklist': 'min',
+    });
+  }, []);
+
+  /** Base case growth % + 5Y value compounding % + compounder checklist. */
+  const applyHighGrowthCompoundersPreset = useCallback(() => {
+    const baseCaseKey = findMetricFilterKeyByLabel(L => L.includes('base') && L.includes('growth'));
+    const fiveYearCompKey = findMetricFilterKeyByLabel(
+      L => L.includes('compounding') && (/\b5\b/.test(L) || L.includes('5y') || L.includes('5 y')),
+    );
+
+    const mins: Record<string, string> = {
+      'score:compounder_checklist': '8',
+    };
+    const modes: Record<string, ColumnBoundMode> = {
+      'score:compounder_checklist': 'min',
+    };
+
+    if (fiveYearCompKey) {
+      mins[fiveYearCompKey] = '15';
+      modes[fiveYearCompKey] = 'min';
+    }
+    if (baseCaseKey) {
+      mins[baseCaseKey] = '15';
+      modes[baseCaseKey] = 'min';
+    }
+
+    setSearch('');
+    setColumnMins(mins);
+    setColumnBoundModes(modes);
+  }, [findMetricFilterKeyByLabel]);
+
+  const applyHighAverageConvictionPreset = useCallback(() => {
+    setSearch('');
+    setColumnMins({
+      avg: '8',
+      'extra:bitsDownsideRisk': '30',
+      'score:terminal_value': '8',
+    });
+    setColumnBoundModes({
+      avg: 'min',
+      'extra:bitsDownsideRisk': 'max',
+      'score:terminal_value': 'min',
+    });
+  }, []);
+
+  const applyWideMoatFocusPreset = useCallback(() => {
+    setSearch('');
+    setColumnMins({
+      'score:competitive_advantage': '8',
+      'score:moat': '8',
+      'score:compounder_checklist': '8',
+      'score:checklist': '8',
+    });
+    setColumnBoundModes({
+      'score:competitive_advantage': 'min',
+      'score:moat': 'min',
+      'score:compounder_checklist': 'min',
+      'score:checklist': 'min',
+    });
+  }, []);
+
+  const applyBalanceSheetAccountingQualityPreset = useCallback(() => {
+    setSearch('');
+    setColumnMins({
+      'score:financial': '8',
+      'score:wb_financial': '8',
+      'extra:bitsDownsideRisk': '25',
+    });
+    setColumnBoundModes({
+      'score:financial': 'min',
+      'score:wb_financial': 'min',
+      'extra:bitsDownsideRisk': 'max',
+    });
+  }, []);
+
   const metricExportHeaders = useMemo(
     () =>
       metricColumns.map(col =>
@@ -821,6 +914,54 @@ export default function MetricsComparePage() {
             />
             Show Single Weighted Score columns
           </label>
+        </div>
+        <div className="metrics-filter-presets" role="group" aria-label="Filter presets">
+          <span className="metrics-filter-presets-label">Presets</span>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={applyLowDownsideCompoundersPreset}
+            disabled={selectedGemIds.length === 0}
+            title="Downside risk (BITS) max 15%, Stock Compounder Checklist min 8.5 — adjust in column headers after applying"
+          >
+            Low downside compounders
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={applyHighGrowthCompoundersPreset}
+            disabled={selectedGemIds.length === 0}
+            title="Base case growth % min 15, 5Y value compounding % min 15 (when those metric columns exist), Stock Compounder Checklist min 8"
+          >
+            High growth compounders
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={applyHighAverageConvictionPreset}
+            disabled={selectedGemIds.length === 0}
+            title="Avg score min 8, Downside risk (BITS) max 30%, Terminal Value – Alpha & Forensic min 8"
+          >
+            High average conviction
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={applyWideMoatFocusPreset}
+            disabled={selectedGemIds.length === 0}
+            title="Competitive Advantage, Moat, Compounder Checklist, Stock Checklist — all min 8"
+          >
+            Wide moat focus
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={applyBalanceSheetAccountingQualityPreset}
+            disabled={selectedGemIds.length === 0}
+            title="Financial min 8, WB Financial Analyst min 8, Downside risk (BITS) max 25%"
+          >
+            Balance-sheet / accounting quality
+          </button>
         </div>
         <button
           type="button"
