@@ -286,6 +286,24 @@ export function impliedCagrPercentFromPrices(
   return r * 100;
 }
 
+/** Price reached in `years` if CAGR is `cagrPercent` (annual, %) from `currentPrice`. Inverse of {@link impliedCagrPercentFromPrices}. */
+export function targetPriceFromImpliedCagrPercent(
+  currentPrice: number,
+  cagrPercent: number,
+  years = 10,
+): number | null {
+  if (
+    currentPrice <= 0 ||
+    !Number.isFinite(currentPrice) ||
+    !Number.isFinite(cagrPercent) ||
+    years <= 0
+  ) {
+    return null;
+  }
+  const r = cagrPercent / 100;
+  return currentPrice * (1 + r) ** years;
+}
+
 /** Which captured / derived figure feeds the position-sizing CAGR input. */
 export type CagrSource = 'implied' | 'base_case' | 'ten_y_total' | 'five_y_vc' | 'custom';
 

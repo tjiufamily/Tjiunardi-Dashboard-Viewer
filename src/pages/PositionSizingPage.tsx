@@ -35,6 +35,7 @@ import {
   metricStorageKeysForGem,
   labelForMetricKey,
   impliedCagrPercentFromPrices,
+  targetPriceFromImpliedCagrPercent,
   valueCompoundingCagrOptionsFromRun,
   type CagrSource,
 } from '../lib/gemMetrics';
@@ -55,11 +56,19 @@ const LS_SIZING_FORM = 'tjiunardi.dashboard.sizing.form.v1';
 const LS_SIZING_FAVOURITES = 'tjiunardi.dashboard.sizing.favourites.v1';
 const MAX_FAVOURITES = 7;
 
+/** Cap 10Y target slider and inputs vs current quote so bad gem data cannot explode the range. */
+const MAX_TEN_YEAR_TARGET_PRICE_MULTIPLIER = 100;
+
+type DownsideLeadField = 'pct' | 'price';
+
 type PositionSizingFavouriteSettings = {
   cagr: string;
   cagrSource: CagrSource;
+  tenYearTargetPrice: string;
   downside: string;
   downsidePrice: string;
+  /** Omitted in older saved favourites — treat as `'pct'`. */
+  downsideLead?: DownsideLeadField;
   avgSuperiorThreshold: number;
   avgSuperiorMaxPct: number;
   probabilityTiers: ProbabilityTierRule[];
@@ -313,19 +322,108 @@ export default function PositionSizingPage() {
 
   const [downside, setDownside] = useState<string>('');
   const [downsidePrice, setDownsidePrice] = useState<string>('');
+  /** Which field is authoritative when the quote refreshes: % → recompute price; price → recompute %. */
+  const [downsideLead, setDownsideLead] = useState<DownsideLeadField>('pct');
+  const [tenYearTargetPrice, setTenYearTargetPrice] = useState<string>('');
   const [showRules, setShowRules] = useState(false);
+  const tenYearTargetHardCap = useMemo(() => {
+    if (delayedPrice == null || delayedPrice <= 0) return null;
+    return delayedPrice * MAX_TEN_YEAR_TARGET_PRICE_MULTIPLIER;
+  }, [delayedPrice]);
+
+  const effectiveTenYearTargetPrice = useMemo(() => {
+    const v = parseFloat(tenYearTargetPrice);
+    if (tenYearTargetPrice.trim() !== '' && Number.isFinite(v) && v > 0) {
+      if (tenYearTargetHardCap != null && v > tenYearTargetHardCap) return tenYearTargetHardCap;
+      return v;
+    }
+    const fb = vcaOpts.tenYearTargetPrice;
+    if (fb == null || fb <= 0) return fb;
+    if (tenYearTargetHardCap != null && fb > tenYearTargetHardCap) return tenYearTargetHardCap;
+    return fb;
+  }, [tenYearTargetPrice, vcaOpts.tenYearTargetPrice, tenYearTargetHardCap]);
+  const effectiveImpliedTenYearCagrPercent = useMemo(() => {
+    if (
+      delayedPrice != null &&
+      delayedPrice > 0 &&
+      effectiveTenYearTargetPrice != null &&
+      effectiveTenYearTargetPrice > 0
+    ) {
+      return impliedCagrPercentFromPrices(delayedPrice, effectiveTenYearTargetPrice, 10);
+    }
+    return vcaOpts.impliedTenYearCagrPercent;
+  }, [delayedPrice, effectiveTenYearTargetPrice, vcaOpts.impliedTenYearCagrPercent]);
+
+  const targetPriceSliderConfig = useMemo(() => {
+    const current = parseFloat(tenYearTargetPrice);
+    const def = vcaOpts.tenYearTargetPrice;
+    const px = delayedPrice != null && delayedPrice > 0 ? delayedPrice : null;
+    const cap = tenYearTargetHardCap;
+    const clampAnchor = (v: number) =>
+      cap != null && Number.isFinite(v) && v > cap ? cap : v;
+    const anchors = [def, px, Number.isFinite(current) ? current : null]
+      .filter((v): v is number => v != null && Number.isFinite(v) && v > 0)
+      .map(clampAnchor);
+    const anchorMax = anchors.length > 0 ? Math.max(...anchors) : 100;
+    const anchorMin = anchors.length > 0 ? Math.min(...anchors) : 1;
+    // Max must stay above the VCA default (often the largest anchor) so the slider can exceed it.
+    const multipleFromPriceMax = px != null ? px * 12 : anchorMax * 2;
+    let rawMax = Math.max(anchorMax * 1.5, multipleFromPriceMax, anchorMax + 1);
+    if (cap != null) rawMax = Math.min(rawMax, cap);
+    const fallbackMin = px != null ? px * 0.25 : 1;
+    const rawMin = Math.min(anchorMin, fallbackMin);
+    const min = Math.max(0.01, Math.floor(rawMin));
+    let max = Math.max(min + 1, Math.ceil(rawMax));
+    if (cap != null) max = Math.min(max, Math.ceil(cap));
+    if (max <= min) max = min + 1;
+    const sliderValue = Number.isFinite(current)
+      ? current
+      : effectiveTenYearTargetPrice != null && effectiveTenYearTargetPrice > 0
+        ? effectiveTenYearTargetPrice
+        : min;
+    return {
+      min,
+      max,
+      value: Math.max(min, Math.min(max, sliderValue)),
+    };
+  }, [tenYearTargetPrice, vcaOpts.tenYearTargetPrice, delayedPrice, effectiveTenYearTargetPrice, tenYearTargetHardCap]);
+  const resetTenYearTargetPriceToDefault = useCallback(() => {
+    if (vcaOpts.tenYearTargetPrice == null || vcaOpts.tenYearTargetPrice <= 0) return;
+    let def = vcaOpts.tenYearTargetPrice;
+    if (tenYearTargetHardCap != null && def > tenYearTargetHardCap) def = tenYearTargetHardCap;
+    setTenYearTargetPrice(Number(def.toFixed(4)).toString());
+  }, [vcaOpts.tenYearTargetPrice, tenYearTargetHardCap]);
+
+  /** When CAGR source is Implied (price → 10Y target), keep the left-column target aligned with the CAGR slider. */
+  const syncTenYearTargetFromCagrInput = useCallback(
+    (cagrStr: string) => {
+      if (delayedPrice == null || delayedPrice <= 0) return;
+      if (cagrStr.trim() === '') {
+        setTenYearTargetPrice('');
+        return;
+      }
+      const g = parseFloat(cagrStr);
+      if (!Number.isFinite(g)) return;
+      let t = targetPriceFromImpliedCagrPercent(delayedPrice, g, 10);
+      if (t == null) return;
+      if (tenYearTargetHardCap != null && t > tenYearTargetHardCap) t = tenYearTargetHardCap;
+      setTenYearTargetPrice(Number(t.toFixed(4)).toString());
+    },
+    [delayedPrice, tenYearTargetHardCap],
+  );
+
   const downsideToVcaTenYearCagr = useMemo(() => {
     const entry = parseFloat(downsidePrice);
-    const target = vcaOpts.tenYearTargetPrice;
+    const target = effectiveTenYearTargetPrice;
     if (!Number.isFinite(entry) || entry <= 0 || target == null || target <= 0) return null;
     return impliedCagrPercentFromPrices(entry, target, 10);
-  }, [downsidePrice, vcaOpts.tenYearTargetPrice]);
+  }, [downsidePrice, effectiveTenYearTargetPrice]);
   const downsideToTargetExpectedReturn = useMemo(() => {
     const entry = parseFloat(downsidePrice);
-    const target = vcaOpts.tenYearTargetPrice;
+    const target = effectiveTenYearTargetPrice;
     if (!Number.isFinite(entry) || entry <= 0 || target == null || target <= 0) return null;
     return ((target / entry) - 1) * 100;
-  }, [downsidePrice, vcaOpts.tenYearTargetPrice]);
+  }, [downsidePrice, effectiveTenYearTargetPrice]);
 
   const [scoreBrackets, setScoreBrackets] = useState<ScoreThreshold[]>(() => [...DEFAULT_SCORE_BRACKETS]);
   const [floorScore, setFloorScore] = useState(DEFAULT_FLOOR_SCORE);
@@ -535,8 +633,10 @@ export default function PositionSizingPage() {
             selectedCompanyId?: string;
             cagr?: string;
             cagrSource?: CagrSource;
+            tenYearTargetPrice?: string;
             downside?: string;
             downsidePrice?: string;
+            downsideLead?: DownsideLeadField;
           };
           if (typeof o.selectedCompanyId === 'string') setSelectedCompanyId(o.selectedCompanyId);
           if (typeof o.cagr === 'string') setCagr(o.cagr);
@@ -549,8 +649,10 @@ export default function PositionSizingPage() {
           ) {
             setCagrSource(o.cagrSource);
           }
+          if (typeof o.tenYearTargetPrice === 'string') setTenYearTargetPrice(o.tenYearTargetPrice);
           if (typeof o.downside === 'string') setDownside(o.downside);
           if (typeof o.downsidePrice === 'string') setDownsidePrice(o.downsidePrice);
+          if (o.downsideLead === 'pct' || o.downsideLead === 'price') setDownsideLead(o.downsideLead);
         }
       } catch {
         /* ignore */
@@ -594,14 +696,16 @@ export default function PositionSizingPage() {
           selectedCompanyId,
           cagr,
           cagrSource,
+          tenYearTargetPrice,
           downside,
           downsidePrice,
+          downsideLead,
         }),
       );
     } catch {
       /* ignore */
     }
-  }, [selectedCompanyId, cagr, cagrSource, downside, downsidePrice]);
+  }, [selectedCompanyId, cagr, cagrSource, tenYearTargetPrice, downside, downsidePrice, downsideLead]);
 
   /** When no CAGR in URL, fill from Value Compounding Analyst metrics (default: implied from price → 10Y target). */
   useEffect(() => {
@@ -612,7 +716,8 @@ export default function PositionSizingPage() {
     if (quotesLoading && (delayedPrice == null || delayedPrice <= 0)) return;
     if (cagrSource === 'custom') return;
 
-    let v: number | null = cagrValueForSource(cagrSource, vcaOpts);
+    let v: number | null =
+      cagrSource === 'implied' ? effectiveImpliedTenYearCagrPercent : cagrValueForSource(cagrSource, vcaOpts);
     if (cagrSource === 'implied' && v == null) {
       v =
         vcaOpts.baseCase ??
@@ -629,13 +734,15 @@ export default function PositionSizingPage() {
     delayedPrice,
     cagrSource,
     vcaOpts,
+    effectiveImpliedTenYearCagrPercent,
     searchParams,
   ]);
 
   const applyCagrPreset = useCallback(
     (src: Exclude<CagrSource, 'custom'>) => {
       setCagrSource(src);
-      let v: number | null = cagrValueForSource(src, vcaOpts);
+      let v: number | null =
+        src === 'implied' ? effectiveImpliedTenYearCagrPercent : cagrValueForSource(src, vcaOpts);
       if (src === 'implied' && v == null) {
         v =
           vcaOpts.baseCase ??
@@ -645,15 +752,17 @@ export default function PositionSizingPage() {
       if (v != null) setCagr(Number(v.toFixed(4)).toString());
       else setCagr('');
     },
-    [vcaOpts],
+    [vcaOpts, effectiveImpliedTenYearCagrPercent],
   );
 
   const handleCompanyChange = (id: string) => {
     setSelectedCompanyId(id);
     setCagr('');
     setCagrSource('implied');
+    setTenYearTargetPrice('');
     setDownside('');
     setDownsidePrice('');
+    setDownsideLead('pct');
     setSearchParams(id ? { company: id } : {});
   };
 
@@ -666,8 +775,10 @@ export default function PositionSizingPage() {
     return {
       cagr,
       cagrSource,
+      tenYearTargetPrice,
       downside,
       downsidePrice,
+      downsideLead,
       avgSuperiorThreshold,
       avgSuperiorMaxPct,
       probabilityTiers,
@@ -684,8 +795,10 @@ export default function PositionSizingPage() {
   }, [
     cagr,
     cagrSource,
+    tenYearTargetPrice,
     downside,
     downsidePrice,
+    downsideLead,
     avgSuperiorThreshold,
     avgSuperiorMaxPct,
     probabilityTiers,
@@ -725,8 +838,10 @@ export default function PositionSizingPage() {
       setCompanyFilter('');
       setCagr(fav.settings.cagr);
       setCagrSource(fav.settings.cagrSource);
+      setTenYearTargetPrice(fav.settings.tenYearTargetPrice ?? '');
       setDownside(fav.settings.downside);
       setDownsidePrice(fav.settings.downsidePrice);
+      setDownsideLead(fav.settings.downsideLead === 'price' ? 'price' : 'pct');
       setAvgSuperiorThreshold(fav.settings.avgSuperiorThreshold);
       setAvgSuperiorMaxPct(fav.settings.avgSuperiorMaxPct);
       setProbabilityTiers(fav.settings.probabilityTiers);
@@ -750,6 +865,7 @@ export default function PositionSizingPage() {
 
   const applyDownsidePct = useCallback(
     (s: string) => {
+      setDownsideLead('pct');
       setDownside(s);
       const p = parseFloat(s);
       if (delayedPrice != null && delayedPrice > 0 && s !== '' && Number.isFinite(p)) {
@@ -763,6 +879,7 @@ export default function PositionSizingPage() {
 
   const applyDownsidePrice = useCallback(
     (s: string) => {
+      setDownsideLead('price');
       setDownsidePrice(s);
       const px = parseFloat(s);
       if (delayedPrice != null && delayedPrice > 0 && s !== '' && Number.isFinite(px)) {
@@ -783,18 +900,39 @@ export default function PositionSizingPage() {
     applyDownsidePrice(defaultDownsidePrice);
   }, [applyDownsidePrice, defaultDownsidePrice]);
 
+  /** Keep % ↔ price in sync when the quote refreshes, without overwriting the field the user is driving. */
   useEffect(() => {
     if (delayedPrice == null || delayedPrice <= 0) return;
-    const pct = parseFloat(downside);
-    if (downside !== '' && Number.isFinite(pct)) {
-      setDownsidePrice(Number((delayedPrice * (1 - pct / 100)).toFixed(4)).toString());
-      return;
+    if (downsideLead === 'pct') {
+      const pct = parseFloat(downside);
+      if (downside !== '' && Number.isFinite(pct)) {
+        setDownsidePrice(Number((delayedPrice * (1 - pct / 100)).toFixed(4)).toString());
+      }
+    } else {
+      const px = parseFloat(downsidePrice);
+      if (downsidePrice !== '' && Number.isFinite(px)) {
+        setDownside(Number(((1 - px / delayedPrice) * 100).toFixed(4)).toString());
+      }
     }
-    const px = parseFloat(downsidePrice);
-    if (downsidePrice !== '' && Number.isFinite(px)) {
-      setDownside(Number(((1 - px / delayedPrice) * 100).toFixed(4)).toString());
+  }, [delayedPrice, downsideLead, downside, downsidePrice]);
+  useEffect(() => {
+    if (!selectedCompanyId) return;
+    if (tenYearTargetPrice.trim() !== '') return;
+    if (vcaOpts.tenYearTargetPrice == null || vcaOpts.tenYearTargetPrice <= 0) return;
+    let def = vcaOpts.tenYearTargetPrice;
+    if (tenYearTargetHardCap != null && def > tenYearTargetHardCap) def = tenYearTargetHardCap;
+    setTenYearTargetPrice(Number(def.toFixed(4)).toString());
+  }, [selectedCompanyId, tenYearTargetPrice, vcaOpts.tenYearTargetPrice, tenYearTargetHardCap]);
+
+  /** Snap stored target string to the dynamic cap when the quote loads or cap tightens. */
+  useEffect(() => {
+    if (tenYearTargetHardCap == null) return;
+    const v = parseFloat(tenYearTargetPrice);
+    if (tenYearTargetPrice.trim() === '' || !Number.isFinite(v)) return;
+    if (v > tenYearTargetHardCap) {
+      setTenYearTargetPrice(Number(tenYearTargetHardCap.toFixed(4)).toString());
     }
-  }, [delayedPrice]);
+  }, [tenYearTargetHardCap, tenYearTargetPrice]);
   useEffect(() => {
     if (!selectedCompanyId) return;
     if (!defaultDownsidePrice) return;
@@ -865,7 +1003,7 @@ export default function PositionSizingPage() {
 
   const ladderWeightedAvg = useMemo(() => {
     if (!stagedTranchePlan) return null;
-    const target = vcaOpts.tenYearTargetPrice;
+    const target = effectiveTenYearTargetPrice;
     const unitsTotal = stagedTranchePlan.rows.reduce((s, r) => s + r.addUnits, 0);
 
     const allPricesValid = stagedTranchePlan.rows.every(r => r.price != null && r.price > 0);
@@ -886,7 +1024,7 @@ export default function PositionSizingPage() {
         : null;
 
     return { weightedAvgScaleInPrice, unitsTotal, cagrToTenYearTarget };
-  }, [stagedTranchePlan, vcaOpts.tenYearTargetPrice]);
+  }, [stagedTranchePlan, effectiveTenYearTargetPrice]);
 
   const exportMarkdown = async () => {
     if (!selectedCompany || !result) return;
@@ -1017,7 +1155,8 @@ export default function PositionSizingPage() {
             ))}
           </select>
           {selectedCompanyId && vcaGem ? (
-            <dl className="sizing-company-metrics">
+            <>
+              <dl className="sizing-company-metrics">
               <div className="sizing-company-metrics-row">
                 <dt>Current price</dt>
                 <dd>
@@ -1032,17 +1171,61 @@ export default function PositionSizingPage() {
               </div>
               <div className="sizing-company-metrics-row">
                 <dt>Implied 10Y CAGR % (VCA)</dt>
-                <dd>{fmtPct(vcaOpts.impliedTenYearCagrPercent)}</dd>
+                <dd>{fmtPct(effectiveImpliedTenYearCagrPercent)}</dd>
               </div>
               <div className="sizing-company-metrics-row">
                 <dt>10 Yr target price</dt>
                 <dd>
-                  {vcaOpts.tenYearTargetPrice != null && vcaOpts.tenYearTargetPrice > 0
-                    ? fmt(vcaOpts.tenYearTargetPrice, 2)
+                  {effectiveTenYearTargetPrice != null && effectiveTenYearTargetPrice > 0
+                    ? fmt(effectiveTenYearTargetPrice, 2)
                     : '—'}
                 </dd>
               </div>
-            </dl>
+              </dl>
+              <div className="sizing-cagr-slider-wrap">
+              <div className="sizing-cagr-slider-head">
+                <span>10 Yr target price slider</span>
+                <strong>{fmt(targetPriceSliderConfig.value, 2)}</strong>
+              </div>
+              <input
+                type="number"
+                step="0.01"
+                min={0}
+                placeholder="e.g. 200"
+                value={tenYearTargetPrice}
+                onChange={e => setTenYearTargetPrice(e.target.value)}
+                className="sizing-input"
+                aria-label="10 year target price"
+              />
+              <input
+                type="range"
+                min={targetPriceSliderConfig.min}
+                max={targetPriceSliderConfig.max}
+                step={0.1}
+                value={targetPriceSliderConfig.value}
+                className="sizing-cagr-slider"
+                onChange={e => setTenYearTargetPrice(Number(parseFloat(e.target.value).toFixed(4)).toString())}
+                aria-label="10 year target price slider"
+              />
+              <div className="sizing-cagr-slider-scale">
+                <span>{fmt(targetPriceSliderConfig.min, 0)}</span>
+                <span>{fmt(targetPriceSliderConfig.max, 0)}</span>
+              </div>
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost sizing-downside-reset-btn"
+                onClick={resetTenYearTargetPriceToDefault}
+                disabled={vcaOpts.tenYearTargetPrice == null || vcaOpts.tenYearTargetPrice <= 0}
+                title={
+                  vcaOpts.tenYearTargetPrice != null && vcaOpts.tenYearTargetPrice > 0
+                    ? `Reset to default target price (${fmt(vcaOpts.tenYearTargetPrice, 2)})`
+                    : 'Default target price unavailable'
+                }
+              >
+                Reset target
+              </button>
+              </div>
+            </>
           ) : selectedCompanyId && !gemsLoading ? (
             <p className="sizing-company-metrics-note">No Value Compounding Analyst gem — target-based metrics unavailable.</p>
           ) : null}
@@ -1113,7 +1296,7 @@ export default function PositionSizingPage() {
                   type="button"
                   className={`sizing-cagr-chip ${cagrSource === 'implied' ? 'active' : ''}`}
                   disabled={
-                    vcaOpts.impliedTenYearCagrPercent == null &&
+                    effectiveImpliedTenYearCagrPercent == null &&
                     vcaOpts.baseCase == null &&
                     vcaOpts.tenYearTotalCagr == null &&
                     vcaOpts.fiveYearValueCompounding == null
@@ -1121,7 +1304,7 @@ export default function PositionSizingPage() {
                   onClick={() => applyCagrPreset('implied')}
                 >
                   <span className="sizing-cagr-chip-title">Implied (price → 10Y target)</span>
-                  <span className="sizing-cagr-chip-value">{fmtPct(effectiveImpliedCagr(vcaOpts))}</span>
+                  <span className="sizing-cagr-chip-value">{fmtPct(effectiveImpliedTenYearCagrPercent)}</span>
                 </button>
                 <button
                   type="button"
@@ -1160,8 +1343,13 @@ export default function PositionSizingPage() {
               placeholder="e.g. 15"
               value={cagr}
               onChange={e => {
-                setCagr(e.target.value);
-                setCagrSource('custom');
+                const s = e.target.value;
+                setCagr(s);
+                if (cagrSource === 'implied') {
+                  syncTenYearTargetFromCagrInput(s);
+                } else {
+                  setCagrSource('custom');
+                }
               }}
               className="sizing-input"
             />
@@ -1178,8 +1366,13 @@ export default function PositionSizingPage() {
                 value={cagrSliderConfig.value}
                 className="sizing-cagr-slider"
                 onChange={e => {
-                  setCagr(Number(parseFloat(e.target.value).toFixed(4)).toString());
-                  setCagrSource('custom');
+                  const next = Number(parseFloat(e.target.value).toFixed(4)).toString();
+                  setCagr(next);
+                  if (cagrSource === 'implied') {
+                    syncTenYearTargetFromCagrInput(next);
+                  } else {
+                    setCagrSource('custom');
+                  }
                 }}
                 aria-label="CAGR slider for 10 years"
               />
@@ -1223,8 +1416,10 @@ export default function PositionSizingPage() {
             ) : null}
             <p className="sizing-field-hint">
               Default uses <strong>implied 10Y CAGR</strong> (delayed price vs. 10Y target from the analyst gem). If that
-              is missing, we fall back to other captured metrics in order. Typing in the field switches to{' '}
-              <strong>custom</strong>.
+              is missing, we fall back to other captured metrics in order. With{' '}
+              <strong>Implied (price → 10Y target)</strong> selected, the CAGR field and slider update the{' '}
+              <strong>10 Yr target price</strong> on the left so they stay aligned. Typing in the CAGR field switches to{' '}
+              <strong>custom</strong> when another quick-fill preset is active instead.
               {selectedCompanyId && (gemsLoading || companyRunsLoading || quotesLoading) ? (
                 <span className="sizing-hint-loading"> Loading…</span>
               ) : null}
@@ -2036,9 +2231,9 @@ export default function PositionSizingPage() {
                           {fmt(r.portfolioAllocationPct, 2)}%
                         </StagedTd>
                         <StagedTd tip={STAGED_COL_TIP.cagrToTenYearTarget} className="num">
-                          {vcaOpts.tenYearTargetPrice != null && r.price != null
+                          {effectiveTenYearTargetPrice != null && r.price != null
                             ? (() => {
-                                const v = impliedCagrPercentFromPrices(r.price, vcaOpts.tenYearTargetPrice, 10);
+                                const v = impliedCagrPercentFromPrices(r.price, effectiveTenYearTargetPrice, 10);
                                 return v != null ? fmtPct(v, 2) : '—';
                               })()
                             : '—'}

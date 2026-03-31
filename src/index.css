@@ -1787,7 +1787,11 @@ a.btn { text-decoration: none; color: inherit; }
   align-self: stretch;
   min-height: 38px;
 }
-.sizing-field--downside { min-width: min(100%, 280px); }
+.sizing-field--downside {
+  min-width: min(100%, 280px);
+  container-type: inline-size;
+  container-name: sizing-downside;
+}
 .sizing-downside-card {
   display: flex;
   flex-direction: column;
@@ -1804,14 +1808,14 @@ a.btn { text-decoration: none; color: inherit; }
 }
 .sizing-downside-slider {
   width: 100%;
-  max-width: 230px;
+  max-width: 100%;
   margin-top: 0;
   cursor: pointer;
   accent-color: var(--accent);
 }
 .sizing-downside-dual {
   display: grid;
-  grid-template-columns: 240px 160px minmax(220px, 1fr);
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) minmax(0, 1fr);
   align-items: end;
   gap: 12px;
 }
@@ -1821,7 +1825,23 @@ a.btn { text-decoration: none; color: inherit; }
   gap: 6px;
   min-width: 0;
 }
-.sizing-downside-dual .sizing-downside-slider { width: 100%; max-width: 240px; }
+.sizing-downside-dual .sizing-downside-slider {
+  width: 100%;
+  max-width: 100%;
+}
+
+@container sizing-downside (max-width: 720px) {
+  .sizing-downside-dual {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+  .sizing-downside-slider-wrap {
+    width: 100%;
+  }
+  .sizing-downside-dual .sizing-downside-slider {
+    max-width: 100%;
+  }
+}
 .sizing-downside-pct-wrap,
 .sizing-downside-price-wrap {
   display: flex;
