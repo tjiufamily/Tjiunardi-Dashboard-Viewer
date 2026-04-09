@@ -40,6 +40,7 @@ import {
   type CagrSource,
 } from '../lib/gemMetrics';
 import { normalizeTickerSymbol } from '../lib/stockQuotes';
+import { loadPriceOverrides, persistPriceOverrides, MANUAL_PRICES_STORAGE_KEY } from '../lib/quoteOverrides';
 import {
   buildPositionSizingJson,
   buildPositionSizingMarkdown,
@@ -187,6 +188,51 @@ export default function PositionSizingPage() {
   );
   const { quotes, loading: quotesLoading, error: quotesError } = useStockQuotes(quoteInfos);
 
+  const delayedQuotePrice = useMemo(() => {
+    if (!quoteSymbol) return null;
+    return quotes.get(normalizeTickerSymbol(quoteSymbol)) ?? null;
+  }, [quotes, quoteSymbol]);
+
+  const [priceOverrides, setPriceOverrides] = useState(loadPriceOverrides);
+  useEffect(() => {
+    setPriceOverrides(loadPriceOverrides());
+  }, [selectedCompanyId]);
+
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === MANUAL_PRICES_STORAGE_KEY || e.key === null) {
+        setPriceOverrides(loadPriceOverrides());
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
+  const manualLastPrice = useMemo(() => {
+    if (!selectedCompanyId) return null;
+    const v = priceOverrides[selectedCompanyId];
+    return typeof v === 'number' && v > 0 && Number.isFinite(v) ? v : null;
+  }, [selectedCompanyId, priceOverrides]);
+
+  /** Manual override (Metrics or this page) when set; else delayed quote. */
+  const effectiveCurrentPrice = useMemo(() => {
+    if (manualLastPrice != null) return manualLastPrice;
+    return delayedQuotePrice;
+  }, [manualLastPrice, delayedQuotePrice]);
+
+  const setManualLastPriceForCompany = useCallback((companyId: string, price: number | null) => {
+    setPriceOverrides(prev => {
+      const next = { ...prev };
+      if (price == null || Number.isNaN(price) || price <= 0) {
+        delete next[companyId];
+      } else {
+        next[companyId] = price;
+      }
+      persistPriceOverrides(next);
+      return next;
+    });
+  }, []);
+
   const vcaGem = useMemo(() => findValueCompoundingAnalystGem(gems), [gems]);
   const latestVcaRun = useMemo(() => {
     if (!vcaGem || !selectedCompanyId) return undefined;
@@ -200,9 +246,10 @@ export default function PositionSizingPage() {
   }, [gems]);
 
   const vcaOpts = useMemo(() => {
-    const px = quoteSymbol ? quotes.get(normalizeTickerSymbol(quoteSymbol)) : undefined;
-    return valueCompoundingCagrOptionsFromRun(vcaGem, latestVcaRun, px ?? null);
-  }, [vcaGem, latestVcaRun, quotes, quoteSymbol]);
+    const px =
+      effectiveCurrentPrice != null && effectiveCurrentPrice > 0 ? effectiveCurrentPrice : null;
+    return valueCompoundingCagrOptionsFromRun(vcaGem, latestVcaRun, px);
+  }, [vcaGem, latestVcaRun, effectiveCurrentPrice]);
 
   const { bitsTargetPrice, latestBitsRun } = useMemo(() => {
     if (!selectedCompanyId || bitsGems.length === 0)
@@ -233,10 +280,6 @@ export default function PositionSizingPage() {
     }
     return { bitsTargetPrice: null, latestBitsRun: undefined };
   }, [selectedCompanyId, bitsGems, companyRuns]);
-  const delayedPrice = useMemo(() => {
-    if (!quoteSymbol) return null;
-    return quotes.get(normalizeTickerSymbol(quoteSymbol)) ?? null;
-  }, [quotes, quoteSymbol]);
 
   /** Price in yr 10 = current × (1+CAGR)^10; multiple = that price / current = (1+CAGR)^10. */
   const cagrProjection = useMemo(() => {
@@ -247,9 +290,9 @@ export default function PositionSizingPage() {
     const r = g / 100;
     const multiple = (1 + r) ** 10;
     const priceYr10 =
-      delayedPrice != null && delayedPrice > 0 ? delayedPrice * multiple : null;
+      effectiveCurrentPrice != null && effectiveCurrentPrice > 0 ? effectiveCurrentPrice * multiple : null;
     return { priceYr10, multiple };
-  }, [cagr, delayedPrice]);
+  }, [cagr, effectiveCurrentPrice]);
 
   const cagrSliderConfig = useMemo(() => {
     const presetVals = [
@@ -327,9 +370,9 @@ export default function PositionSizingPage() {
   const [tenYearTargetPrice, setTenYearTargetPrice] = useState<string>('');
   const [showRules, setShowRules] = useState(false);
   const tenYearTargetHardCap = useMemo(() => {
-    if (delayedPrice == null || delayedPrice <= 0) return null;
-    return delayedPrice * MAX_TEN_YEAR_TARGET_PRICE_MULTIPLIER;
-  }, [delayedPrice]);
+    if (effectiveCurrentPrice == null || effectiveCurrentPrice <= 0) return null;
+    return effectiveCurrentPrice * MAX_TEN_YEAR_TARGET_PRICE_MULTIPLIER;
+  }, [effectiveCurrentPrice]);
 
   const effectiveTenYearTargetPrice = useMemo(() => {
     const v = parseFloat(tenYearTargetPrice);
@@ -344,20 +387,20 @@ export default function PositionSizingPage() {
   }, [tenYearTargetPrice, vcaOpts.tenYearTargetPrice, tenYearTargetHardCap]);
   const effectiveImpliedTenYearCagrPercent = useMemo(() => {
     if (
-      delayedPrice != null &&
-      delayedPrice > 0 &&
+      effectiveCurrentPrice != null &&
+      effectiveCurrentPrice > 0 &&
       effectiveTenYearTargetPrice != null &&
       effectiveTenYearTargetPrice > 0
     ) {
-      return impliedCagrPercentFromPrices(delayedPrice, effectiveTenYearTargetPrice, 10);
+      return impliedCagrPercentFromPrices(effectiveCurrentPrice, effectiveTenYearTargetPrice, 10);
     }
     return vcaOpts.impliedTenYearCagrPercent;
-  }, [delayedPrice, effectiveTenYearTargetPrice, vcaOpts.impliedTenYearCagrPercent]);
+  }, [effectiveCurrentPrice, effectiveTenYearTargetPrice, vcaOpts.impliedTenYearCagrPercent]);
 
   const targetPriceSliderConfig = useMemo(() => {
     const current = parseFloat(tenYearTargetPrice);
     const def = vcaOpts.tenYearTargetPrice;
-    const px = delayedPrice != null && delayedPrice > 0 ? delayedPrice : null;
+    const px = effectiveCurrentPrice != null && effectiveCurrentPrice > 0 ? effectiveCurrentPrice : null;
     const cap = tenYearTargetHardCap;
     const clampAnchor = (v: number) =>
       cap != null && Number.isFinite(v) && v > cap ? cap : v;
@@ -386,7 +429,7 @@ export default function PositionSizingPage() {
       max,
       value: Math.max(min, Math.min(max, sliderValue)),
     };
-  }, [tenYearTargetPrice, vcaOpts.tenYearTargetPrice, delayedPrice, effectiveTenYearTargetPrice, tenYearTargetHardCap]);
+  }, [tenYearTargetPrice, vcaOpts.tenYearTargetPrice, effectiveCurrentPrice, effectiveTenYearTargetPrice, tenYearTargetHardCap]);
   const resetTenYearTargetPriceToDefault = useCallback(() => {
     if (vcaOpts.tenYearTargetPrice == null || vcaOpts.tenYearTargetPrice <= 0) return;
     let def = vcaOpts.tenYearTargetPrice;
@@ -397,19 +440,19 @@ export default function PositionSizingPage() {
   /** When CAGR source is Implied (price → 10Y target), keep the left-column target aligned with the CAGR slider. */
   const syncTenYearTargetFromCagrInput = useCallback(
     (cagrStr: string) => {
-      if (delayedPrice == null || delayedPrice <= 0) return;
+      if (effectiveCurrentPrice == null || effectiveCurrentPrice <= 0) return;
       if (cagrStr.trim() === '') {
         setTenYearTargetPrice('');
         return;
       }
       const g = parseFloat(cagrStr);
       if (!Number.isFinite(g)) return;
-      let t = targetPriceFromImpliedCagrPercent(delayedPrice, g, 10);
+      let t = targetPriceFromImpliedCagrPercent(effectiveCurrentPrice, g, 10);
       if (t == null) return;
       if (tenYearTargetHardCap != null && t > tenYearTargetHardCap) t = tenYearTargetHardCap;
       setTenYearTargetPrice(Number(t.toFixed(4)).toString());
     },
-    [delayedPrice, tenYearTargetHardCap],
+    [effectiveCurrentPrice, tenYearTargetHardCap],
   );
 
   const downsideToVcaTenYearCagr = useMemo(() => {
@@ -713,7 +756,7 @@ export default function PositionSizingPage() {
     if (cagrParam !== null && cagrParam !== '') return;
     if (!selectedCompanyId || gemsLoading) return;
     if (companyRunsLoading) return;
-    if (quotesLoading && (delayedPrice == null || delayedPrice <= 0)) return;
+    if (quotesLoading && (effectiveCurrentPrice == null || effectiveCurrentPrice <= 0)) return;
     if (cagrSource === 'custom') return;
 
     let v: number | null =
@@ -731,7 +774,7 @@ export default function PositionSizingPage() {
     gemsLoading,
     companyRunsLoading,
     quotesLoading,
-    delayedPrice,
+    effectiveCurrentPrice,
     cagrSource,
     vcaOpts,
     effectiveImpliedTenYearCagrPercent,
@@ -868,13 +911,13 @@ export default function PositionSizingPage() {
       setDownsideLead('pct');
       setDownside(s);
       const p = parseFloat(s);
-      if (delayedPrice != null && delayedPrice > 0 && s !== '' && Number.isFinite(p)) {
-        setDownsidePrice(Number((delayedPrice * (1 - p / 100)).toFixed(4)).toString());
+      if (effectiveCurrentPrice != null && effectiveCurrentPrice > 0 && s !== '' && Number.isFinite(p)) {
+        setDownsidePrice(Number((effectiveCurrentPrice * (1 - p / 100)).toFixed(4)).toString());
       } else if (s === '') {
         setDownsidePrice('');
       }
     },
-    [delayedPrice],
+    [effectiveCurrentPrice],
   );
 
   const applyDownsidePrice = useCallback(
@@ -882,13 +925,13 @@ export default function PositionSizingPage() {
       setDownsideLead('price');
       setDownsidePrice(s);
       const px = parseFloat(s);
-      if (delayedPrice != null && delayedPrice > 0 && s !== '' && Number.isFinite(px)) {
-        setDownside(Number(((1 - px / delayedPrice) * 100).toFixed(4)).toString());
+      if (effectiveCurrentPrice != null && effectiveCurrentPrice > 0 && s !== '' && Number.isFinite(px)) {
+        setDownside(Number(((1 - px / effectiveCurrentPrice) * 100).toFixed(4)).toString());
       } else if (s === '') {
         setDownside('');
       }
     },
-    [delayedPrice],
+    [effectiveCurrentPrice],
   );
   const defaultDownsidePrice = useMemo(() => {
     if (bitsTargetPrice == null || bitsTargetPrice <= 0) return '';
@@ -902,19 +945,19 @@ export default function PositionSizingPage() {
 
   /** Keep % ↔ price in sync when the quote refreshes, without overwriting the field the user is driving. */
   useEffect(() => {
-    if (delayedPrice == null || delayedPrice <= 0) return;
+    if (effectiveCurrentPrice == null || effectiveCurrentPrice <= 0) return;
     if (downsideLead === 'pct') {
       const pct = parseFloat(downside);
       if (downside !== '' && Number.isFinite(pct)) {
-        setDownsidePrice(Number((delayedPrice * (1 - pct / 100)).toFixed(4)).toString());
+        setDownsidePrice(Number((effectiveCurrentPrice * (1 - pct / 100)).toFixed(4)).toString());
       }
     } else {
       const px = parseFloat(downsidePrice);
       if (downsidePrice !== '' && Number.isFinite(px)) {
-        setDownside(Number(((1 - px / delayedPrice) * 100).toFixed(4)).toString());
+        setDownside(Number(((1 - px / effectiveCurrentPrice) * 100).toFixed(4)).toString());
       }
     }
-  }, [delayedPrice, downsideLead, downside, downsidePrice]);
+  }, [effectiveCurrentPrice, downsideLead, downside, downsidePrice]);
   useEffect(() => {
     if (!selectedCompanyId) return;
     if (tenYearTargetPrice.trim() !== '') return;
@@ -1154,80 +1197,130 @@ export default function PositionSizingPage() {
               </option>
             ))}
           </select>
-          {selectedCompanyId && vcaGem ? (
+          {selectedCompanyId ? (
             <>
               <dl className="sizing-company-metrics">
-              <div className="sizing-company-metrics-row">
-                <dt>Current price</dt>
-                <dd>
-                  {delayedPrice != null && delayedPrice > 0 ? (
-                    fmt(delayedPrice, 2)
-                  ) : quotesLoading ? (
-                    <span className="sizing-metrics-pending">…</span>
-                  ) : (
-                    '—'
-                  )}
-                </dd>
-              </div>
-              <div className="sizing-company-metrics-row">
-                <dt>Implied 10Y CAGR % (VCA)</dt>
-                <dd>{fmtPct(effectiveImpliedTenYearCagrPercent)}</dd>
-              </div>
-              <div className="sizing-company-metrics-row">
-                <dt>10 Yr target price</dt>
-                <dd>
-                  {effectiveTenYearTargetPrice != null && effectiveTenYearTargetPrice > 0
-                    ? fmt(effectiveTenYearTargetPrice, 2)
-                    : '—'}
-                </dd>
-              </div>
+                <div className="sizing-company-metrics-row">
+                  <dt>Current price (delayed)</dt>
+                  <dd
+                    className={manualLastPrice != null ? 'sizing-company-metrics-dd--manual' : undefined}
+                    title={
+                      manualLastPrice != null
+                        ? 'Manual price (saved for this company; same storage as Metrics Landscape). ↺ restores the delayed quote.'
+                        : 'Default: delayed quote from the feed. Type a price to override (saved in this browser).'
+                    }
+                  >
+                    <div className="sizing-current-price-edit">
+                      <input
+                        type="number"
+                        step="any"
+                        min={0}
+                        className="sizing-current-price-input"
+                        aria-label={`Current price (delayed) for ${selectedCompany?.companyName ?? 'company'}`}
+                        value={
+                          effectiveCurrentPrice != null && effectiveCurrentPrice > 0
+                            ? effectiveCurrentPrice
+                            : ''
+                        }
+                        placeholder={
+                          quotesLoading && (effectiveCurrentPrice == null || effectiveCurrentPrice <= 0)
+                            ? '…'
+                            : ''
+                        }
+                        onChange={e => {
+                          const v = e.target.value;
+                          if (v === '') {
+                            setManualLastPriceForCompany(selectedCompanyId, null);
+                            return;
+                          }
+                          const n = parseFloat(v);
+                          if (!Number.isNaN(n) && n >= 0) {
+                            setManualLastPriceForCompany(selectedCompanyId, n > 0 ? n : null);
+                          }
+                        }}
+                      />
+                      {manualLastPrice != null ? (
+                        <button
+                          type="button"
+                          className="sizing-current-price-revert"
+                          title="Revert to delayed quote"
+                          aria-label="Revert to delayed quote"
+                          onClick={() => setManualLastPriceForCompany(selectedCompanyId, null)}
+                        >
+                          ↺
+                        </button>
+                      ) : null}
+                    </div>
+                  </dd>
+                </div>
+                {vcaGem ? (
+                  <>
+                    <div className="sizing-company-metrics-row">
+                      <dt>Implied 10Y CAGR % (VCA)</dt>
+                      <dd>{fmtPct(effectiveImpliedTenYearCagrPercent)}</dd>
+                    </div>
+                    <div className="sizing-company-metrics-row">
+                      <dt>10 Yr target price</dt>
+                      <dd>
+                        {effectiveTenYearTargetPrice != null && effectiveTenYearTargetPrice > 0
+                          ? fmt(effectiveTenYearTargetPrice, 2)
+                          : '—'}
+                      </dd>
+                    </div>
+                  </>
+                ) : null}
               </dl>
-              <div className="sizing-cagr-slider-wrap">
-              <div className="sizing-cagr-slider-head">
-                <span>10 Yr target price slider</span>
-                <strong>{fmt(targetPriceSliderConfig.value, 2)}</strong>
-              </div>
-              <input
-                type="number"
-                step="0.01"
-                min={0}
-                placeholder="e.g. 200"
-                value={tenYearTargetPrice}
-                onChange={e => setTenYearTargetPrice(e.target.value)}
-                className="sizing-input"
-                aria-label="10 year target price"
-              />
-              <input
-                type="range"
-                min={targetPriceSliderConfig.min}
-                max={targetPriceSliderConfig.max}
-                step={0.1}
-                value={targetPriceSliderConfig.value}
-                className="sizing-cagr-slider"
-                onChange={e => setTenYearTargetPrice(Number(parseFloat(e.target.value).toFixed(4)).toString())}
-                aria-label="10 year target price slider"
-              />
-              <div className="sizing-cagr-slider-scale">
-                <span>{fmt(targetPriceSliderConfig.min, 0)}</span>
-                <span>{fmt(targetPriceSliderConfig.max, 0)}</span>
-              </div>
-              <button
-                type="button"
-                className="btn btn-sm btn-ghost sizing-downside-reset-btn"
-                onClick={resetTenYearTargetPriceToDefault}
-                disabled={vcaOpts.tenYearTargetPrice == null || vcaOpts.tenYearTargetPrice <= 0}
-                title={
-                  vcaOpts.tenYearTargetPrice != null && vcaOpts.tenYearTargetPrice > 0
-                    ? `Reset to default target price (${fmt(vcaOpts.tenYearTargetPrice, 2)})`
-                    : 'Default target price unavailable'
-                }
-              >
-                Reset target
-              </button>
-              </div>
+              {vcaGem ? (
+                <div className="sizing-cagr-slider-wrap">
+                  <div className="sizing-cagr-slider-head">
+                    <span>10 Yr target price slider</span>
+                    <strong>{fmt(targetPriceSliderConfig.value, 2)}</strong>
+                  </div>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min={0}
+                    placeholder="e.g. 200"
+                    value={tenYearTargetPrice}
+                    onChange={e => setTenYearTargetPrice(e.target.value)}
+                    className="sizing-input"
+                    aria-label="10 year target price"
+                  />
+                  <input
+                    type="range"
+                    min={targetPriceSliderConfig.min}
+                    max={targetPriceSliderConfig.max}
+                    step={0.1}
+                    value={targetPriceSliderConfig.value}
+                    className="sizing-cagr-slider"
+                    onChange={e => setTenYearTargetPrice(Number(parseFloat(e.target.value).toFixed(4)).toString())}
+                    aria-label="10 year target price slider"
+                  />
+                  <div className="sizing-cagr-slider-scale">
+                    <span>{fmt(targetPriceSliderConfig.min, 0)}</span>
+                    <span>{fmt(targetPriceSliderConfig.max, 0)}</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-ghost sizing-downside-reset-btn"
+                    onClick={resetTenYearTargetPriceToDefault}
+                    disabled={vcaOpts.tenYearTargetPrice == null || vcaOpts.tenYearTargetPrice <= 0}
+                    title={
+                      vcaOpts.tenYearTargetPrice != null && vcaOpts.tenYearTargetPrice > 0
+                        ? `Reset to default target price (${fmt(vcaOpts.tenYearTargetPrice, 2)})`
+                        : 'Default target price unavailable'
+                    }
+                  >
+                    Reset target
+                  </button>
+                </div>
+              ) : null}
+              {!vcaGem && !gemsLoading ? (
+                <p className="sizing-company-metrics-note">
+                  No Value Compounding Analyst gem — target-based metrics unavailable.
+                </p>
+              ) : null}
             </>
-          ) : selectedCompanyId && !gemsLoading ? (
-            <p className="sizing-company-metrics-note">No Value Compounding Analyst gem — target-based metrics unavailable.</p>
           ) : null}
           <div className="sizing-favourites-panel">
             <div className="sizing-favourites-header">
@@ -1549,14 +1642,14 @@ export default function PositionSizingPage() {
                   <span className="sizing-downside-label">
                     <span className="sizing-inline-tip" tabIndex={0}>
                       Downside (%)
-                      {delayedPrice != null &&
-                      delayedPrice > 0 &&
+                      {effectiveCurrentPrice != null &&
+                      effectiveCurrentPrice > 0 &&
                       downsidePrice !== '' &&
                       Number.isFinite(parseFloat(downsidePrice)) &&
                       downside !== '' &&
                       Number.isFinite(parseFloat(downside)) ? (
                         <span className="sizing-inline-tip-panel">
-                          Current {fmt(delayedPrice, 2)} {'->'} downside target {fmt(parseFloat(downsidePrice), 2)} (
+                          Current {fmt(effectiveCurrentPrice, 2)} {'->'} downside target {fmt(parseFloat(downsidePrice), 2)} (
                           {fmtPct(parseFloat(downside))} drawdown from current)
                         </span>
                       ) : (
@@ -1598,17 +1691,17 @@ export default function PositionSizingPage() {
                   <input
                     type="number"
                     step="0.01"
-                    placeholder={delayedPrice != null && delayedPrice > 0 ? 'target' : '—'}
+                    placeholder={effectiveCurrentPrice != null && effectiveCurrentPrice > 0 ? 'target' : '—'}
                     value={downsidePrice}
                     onChange={e => applyDownsidePrice(e.target.value)}
                     className="sizing-input"
-                    disabled={delayedPrice == null || delayedPrice <= 0}
+                    disabled={effectiveCurrentPrice == null || effectiveCurrentPrice <= 0}
                     title={
-                      delayedPrice != null && delayedPrice > 0
-                        ? 'Implied price at this drawdown vs. current quote'
+                      effectiveCurrentPrice != null && effectiveCurrentPrice > 0
+                        ? 'Implied price at this drawdown vs. current price (delayed quote or Metrics manual override)'
                         : 'Current price unavailable — enter % only or wait for quote'
                     }
-                    aria-label="Downside price implied from current quote and expected drawdown"
+                    aria-label="Downside price implied from current price and expected drawdown"
                   />
                 </span>
               </div>
@@ -1637,7 +1730,7 @@ export default function PositionSizingPage() {
                 ) : null}
               </div>
             </div>
-            {selectedCompanyId && !quotesLoading && (delayedPrice == null || delayedPrice <= 0) ? (
+            {selectedCompanyId && !quotesLoading && (effectiveCurrentPrice == null || effectiveCurrentPrice <= 0) ? (
               <p className="sizing-field-hint">Enter downside as %, or set a target price once a quote loads.</p>
             ) : null}
           </div>

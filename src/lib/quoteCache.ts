@@ -14,15 +14,43 @@ function toEntry(v: unknown): QuoteCacheEntry | null {
   return null;
 }
 
+function pickNewer(a: QuoteCacheEntry, b: QuoteCacheEntry): QuoteCacheEntry {
+  if (b.updatedAt > a.updatedAt) return b;
+  if (a.updatedAt > b.updatedAt) return a;
+  return b.price >= a.price ? b : a;
+}
+
 function loadRaw(): Map<string, QuoteCacheEntry> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return new Map();
     const o = JSON.parse(raw) as Record<string, unknown>;
     const m = new Map<string, QuoteCacheEntry>();
+    let needsPersist = false;
     for (const [k, v] of Object.entries(o)) {
       const e = toEntry(v);
-      if (e) m.set(k, e);
+      if (!e) continue;
+      const uk = k.toUpperCase();
+      if (k !== uk) needsPersist = true;
+      if (e.updatedAt === 0) {
+        e.updatedAt = Date.now();
+        needsPersist = true;
+      }
+      const existing = m.get(uk);
+      if (existing) {
+        const merged = pickNewer(existing, e);
+        if (merged !== existing) needsPersist = true;
+        m.set(uk, merged);
+      } else {
+        m.set(uk, e);
+      }
+    }
+    if (needsPersist) {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(Object.fromEntries(m)));
+      } catch {
+        // quota / private mode
+      }
     }
     return m;
   } catch {

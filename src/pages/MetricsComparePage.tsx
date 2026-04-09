@@ -25,6 +25,10 @@ import {
   type ColumnBoundMode,
 } from '../lib/columnMinFilters';
 import { ColumnMinFilterCell } from '../components/ColumnMinFilterCell';
+import {
+  BuyPriceToneFilterCell,
+  type BuyPriceToneMode,
+} from '../components/BuyPriceToneFilterCell';
 import { useStockQuotes } from '../hooks/useStockQuotes';
 import { normalizeTickerSymbol } from '../lib/stockQuotes';
 import { loadPriceOverrides, persistPriceOverrides } from '../lib/quoteOverrides';
@@ -134,12 +138,67 @@ function isTargetPeMetric(label: string, storageKey: string): boolean {
   return hasPe && hasTarget;
 }
 
+/** Normalize metric label/key for name matching (× vs x, dash variants, collapse spaces). */
+function normalizedMetricsText(label: string, storageKey: string): string {
+  return `${label} ${storageKey}`
+    .toLowerCase()
+    .replace(/×/g, 'x')
+    .replace(/[‐‑‒–—−]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * "Valuation Low x Growth" (FAJ / etc.) — same &lt;12 / 12–24 / &gt;24 banded palette as Target P/E.
+ * Tolerant of × vs x, hyphens, underscores, and optional "%" in the label (which would otherwise
+ * trip isCagrLikeMetric).
+ */
+function isValuationLowXGrowthMetric(label: string, storageKey: string): boolean {
+  const s = normalizedMetricsText(label, storageKey);
+  const k = storageKey.toLowerCase().replace(/[‐‑‒–—−]/g, '-');
+
+  if (/desired\s+buy|\bbuy\s+price\b.*\bmos\b|\b20\s*%?\s*mos\b|\b30\s*%?\s*mos\b/i.test(s)) {
+    return false;
+  }
+
+  const hasValuation =
+    /\bvaluation\b/i.test(s) || k.includes('valuation') || /(^|[._-])valuation([._-]|$)/.test(k);
+
+  const hasLowXGrowth =
+    /\blow[\s\-_]*x[\s\-_]*growth\b/i.test(s) ||
+    /\blow[\s\-_]*x[\s\-_]*growth\b/i.test(k.replace(/_/g, ' ')) ||
+    /(?:^|[._-])low[._-]x[._-]growth(?:[._-]|$)/i.test(k) ||
+    /valuation[_\s-]*low[_\s-]*x[_\s-]*growth/i.test(k);
+
+  if (!hasLowXGrowth) return false;
+
+  // Require explicit valuation context (avoid unrelated "low x growth" phrases).
+  return hasValuation;
+}
+
+function targetPeStyleToneClass(value: number): string {
+  if (value < 12) return 'metric-tone metric-tone--cool';
+  if (value <= 24) return 'metric-tone metric-tone--neutral';
+  return 'metric-tone metric-tone--warm';
+}
+
+function buyTargetIsGreenVsLastPrice(metricValue: number | undefined, lastPrice: number | null): boolean {
+  return (
+    lastPrice != null &&
+    lastPrice > 0 &&
+    metricValue != null &&
+    !Number.isNaN(metricValue) &&
+    metricValue > lastPrice
+  );
+}
+
 function isDownsideRiskMetric(label: string, storageKey: string): boolean {
   const s = `${label} ${storageKey}`.toLowerCase();
   return /downside/.test(s) && /risk|drawdown|loss/.test(s);
 }
 
 function isCagrLikeMetric(label: string, storageKey: string): boolean {
+  if (isValuationLowXGrowthMetric(label, storageKey)) return false;
   const s = `${label} ${storageKey}`.toLowerCase();
   if (/bits\s*to\s*vca/.test(s) && /cagr/.test(s)) return true;
   if (/implied/.test(s) && /cagr/.test(s)) return true;
@@ -148,18 +207,51 @@ function isCagrLikeMetric(label: string, storageKey: string): boolean {
   return /cagr|compound/.test(s) || (/growth/.test(s) && /%|percent|pct/.test(s));
 }
 
+/** Buy targets vs last price: green when value is greater than last price (delayed). */
+function isBuyPriceVsLastPriceMetric(label: string, storageKey: string): boolean {
+  const s = `${label} ${storageKey}`.toLowerCase().replace(/\s+/g, ' ');
+  const k = storageKey.toLowerCase();
+
+  // "Low X Growth Desired Buy Price" (label + capture key variants)
+  if (
+    /desired\s+buy\s+price/.test(s) &&
+    (/low\s*x\s*growth|low\s+x\s*growth/.test(s) || /low_x_growth/.test(k))
+  ) {
+    return true;
+  }
+  if (/low_x_growth.*desired|desired_buy_price/.test(k)) return true;
+
+  // "Buy Price 20% MOS" / "Buy Price 30% MOS"
+  if (/\bbuy\s+price\b/.test(s) && (/\bmos\b|margin\s+of\s+safety/.test(s))) {
+    if (/\b20\b/.test(s) && /\b30\b/.test(s)) return false;
+    if (/\b20\b/.test(s) || /\b30\b/.test(s)) return true;
+  }
+  if (/\b20\s*%?\s*mos\b|\b30\s*%?\s*mos\b/i.test(s)) return true;
+
+  if (/buy_price_20|buy_price_30/.test(k)) return true;
+  if (/(?:^|_)(20|30)_mos(?:_|$)/.test(k) && /buy|price/.test(k)) return true;
+
+  return false;
+}
+
 function metricToneClassBySemanticType(
   value: number | null | undefined,
   label: string,
   storageKey: string,
+  lastPrice?: number | null,
 ): string {
   if (value == null || Number.isNaN(value)) return 'metric-tone metric-tone--na';
 
-  if (isTargetPeMetric(label, storageKey)) {
-    // Target P/E is context-dependent; keep cues neutral (blue/amber), not good-vs-bad.
-    if (value < 12) return 'metric-tone metric-tone--cool';
-    if (value <= 24) return 'metric-tone metric-tone--neutral';
-    return 'metric-tone metric-tone--warm';
+  if (isBuyPriceVsLastPriceMetric(label, storageKey)) {
+    if (lastPrice != null && lastPrice > 0 && value > lastPrice) {
+      return 'metric-tone metric-tone--excellent';
+    }
+    return '';
+  }
+
+  if (isValuationLowXGrowthMetric(label, storageKey) || isTargetPeMetric(label, storageKey)) {
+    // Target P/E (and valuation P/E-style columns): neutral bands, not good-vs-bad.
+    return targetPeStyleToneClass(value);
   }
 
   if (isDownsideRiskMetric(label, storageKey)) {
@@ -229,6 +321,7 @@ export default function MetricsComparePage() {
   const [search, setSearch] = useState('');
   const [columnMins, setColumnMins] = useState<Record<string, string>>({});
   const [columnBoundModes, setColumnBoundModes] = useState<Record<string, ColumnBoundMode>>({});
+  const [buyPriceToneFilters, setBuyPriceToneFilters] = useState<Record<string, BuyPriceToneMode>>({});
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [priceOverrides, setPriceOverrides] = useState<Record<string, number>>(loadPriceOverrides);
@@ -262,6 +355,7 @@ export default function MetricsComparePage() {
     setSearch('');
     setColumnMins({});
     setColumnBoundModes({});
+    setBuyPriceToneFilters({});
   };
 
   useEffect(() => {
@@ -297,6 +391,7 @@ export default function MetricsComparePage() {
 
   useEffect(() => {
     setColumnMins({});
+    setBuyPriceToneFilters({});
   }, [selectedGemIds]);
 
   const vcaGem = useMemo(() => findValueCompoundingAnalystGem(gems), [gems]);
@@ -388,6 +483,15 @@ export default function MetricsComparePage() {
     }
     return cols;
   }, [selectedGems, selectedRunsByGem]);
+
+  /** Min/max filters do not apply to buy-target vs last-price columns (those use Green/White tone filters). */
+  const metricColumnIdsForNumericBounds = useMemo(
+    () =>
+      metricColumns
+        .filter(col => !isBuyPriceVsLastPriceMetric(col.label, col.key))
+        .map(c => c.id),
+    [metricColumns],
+  );
 
   const findMetricFilterKeyByLabel = useCallback(
     (match: (labelLower: string) => boolean): string | null => {
@@ -805,12 +909,22 @@ export default function MetricsComparePage() {
           columnMins,
           st => r.scores[st],
           k => r.metrics[k],
-          metricColumns.map(c => c.id),
+          metricColumnIdsForNumericBounds,
           () => avgOfScores(r.scores),
           columnBoundModes,
         )
       ) {
         return false;
+      }
+      for (const col of metricColumns) {
+        if (!isBuyPriceVsLastPriceMetric(col.label, col.key)) continue;
+        const fk = `metric:${col.id}`;
+        const toneMode = buyPriceToneFilters[fk] ?? 'all';
+        if (toneMode === 'all') continue;
+        const v = r.metrics[col.id];
+        const green = buyTargetIsGreenVsLastPrice(v, r.lastPrice);
+        if (toneMode === 'green' && !green) return false;
+        if (toneMode === 'white' && green) return false;
       }
       const minP = parseMinInput(columnMins['extra:price'] ?? '');
       if (
@@ -883,7 +997,17 @@ export default function MetricsComparePage() {
     });
 
     return list;
-  }, [enrichedRows, search, columnMins, columnBoundModes, metricColumns, sortKey, sortDir]);
+  }, [
+    enrichedRows,
+    search,
+    columnMins,
+    columnBoundModes,
+    buyPriceToneFilters,
+    metricColumns,
+    metricColumnIdsForNumericBounds,
+    sortKey,
+    sortDir,
+  ]);
 
   const exportLandscape = useCallback(() => {
     const csv = buildMetricsLandscapeCSV({
@@ -1297,13 +1421,23 @@ export default function MetricsComparePage() {
                   )}
                   {metricColumns.map(col => (
                     <th key={col.id} className="filter-header-cell">
-                      <ColumnMinFilterCell
-                        mode={columnBoundModes[`metric:${col.id}`] ?? 'min'}
-                        onModeChange={m => setBoundMode(`metric:${col.id}`, m)}
-                        value={columnMins[`metric:${col.id}`] ?? ''}
-                        onValueChange={v => setMin(`metric:${col.id}`, v)}
-                        filterAriaLabel={`${col.label} filter`}
-                      />
+                      {isBuyPriceVsLastPriceMetric(col.label, col.key) ? (
+                        <BuyPriceToneFilterCell
+                          mode={buyPriceToneFilters[`metric:${col.id}`] ?? 'all'}
+                          onModeChange={m =>
+                            setBuyPriceToneFilters(prev => ({ ...prev, [`metric:${col.id}`]: m }))
+                          }
+                          filterAriaLabel={`${col.label}: filter by green vs white vs last price`}
+                        />
+                      ) : (
+                        <ColumnMinFilterCell
+                          mode={columnBoundModes[`metric:${col.id}`] ?? 'min'}
+                          onModeChange={m2 => setBoundMode(`metric:${col.id}`, m2)}
+                          value={columnMins[`metric:${col.id}`] ?? ''}
+                          onValueChange={v => setMin(`metric:${col.id}`, v)}
+                          filterAriaLabel={`${col.label} filter`}
+                        />
+                      )}
                     </th>
                   ))}
                   {showWeightedScores &&
@@ -1425,7 +1559,12 @@ export default function MetricsComparePage() {
                       {metricColumns.map(col => (
                         <td
                           key={col.id}
-                          className={`metric-cell ${metricToneClassBySemanticType(r.metrics[col.id], col.label, col.key)}`}
+                          className={`metric-cell ${metricToneClassBySemanticType(
+                            r.metrics[col.id],
+                            col.label,
+                            col.key,
+                            r.lastPrice,
+                          )}`}
                         >
                           {fmtMetric(r.metrics[col.id])}
                         </td>

@@ -1,6 +1,7 @@
 /** User-edited last prices on Metrics (per company), persisted in localStorage. */
 
-const STORAGE_KEY = 'tjiunardi.dashboard.manualPrices.v1';
+export const MANUAL_PRICES_STORAGE_KEY = 'tjiunardi.dashboard.manualPrices.v1';
+const STORAGE_KEY = MANUAL_PRICES_STORAGE_KEY;
 
 export function loadPriceOverrides(): Record<string, number> {
   try {
