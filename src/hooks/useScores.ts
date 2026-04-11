@@ -32,6 +32,12 @@ const SCORE_TYPE_ALIASES: Record<string, ScoreType> = {
   lollapalooza_moat: 'moat',
   lollapalooza_moat_JT: 'moat',
   lollapalooza_moat_jt: 'moat',
+  pre_mortem: 'pre_mortem_safety',
+  pre_mortem_risk: 'pre_mortem_safety',
+  premortem_safety: 'pre_mortem_safety',
+  gauntlet_risk: 'gauntlet_safety',
+  gauntlet: 'gauntlet_safety',
+  low_risk_safety: 'gauntlet_safety',
 };
 
 function canonicalScoreType(scoreType: string | null | undefined): ScoreType | null {
@@ -50,6 +56,8 @@ function canonicalScoreType(scoreType: string | null | undefined): ScoreType | n
 
   // Fuzzy keyword match as last resort
   const lc = scoreType.toLowerCase();
+  if (/pre[\s_-]*mortem/i.test(lc) && /safety|risk|score/i.test(lc)) return 'pre_mortem_safety';
+  if (/gauntlet/i.test(lc) && /safety|risk|score/i.test(lc)) return 'gauntlet_safety';
   if (/compounder/.test(lc) && /checklist/.test(lc)) return 'compounder_checklist';
   if (/terminal/.test(lc) && /value/.test(lc)) return 'terminal_value';
   if (/anti\s*fragile/i.test(lc)) return 'antifragile';
@@ -69,6 +77,8 @@ function canonicalScoreType(scoreType: string | null | undefined): ScoreType | n
 function inferScoreTypeFromName(name: string | null | undefined): ScoreType | null {
   if (!name) return null;
   const lc = name.toLowerCase();
+  if (/pre[\s_-]*mortem/i.test(lc)) return 'pre_mortem_safety';
+  if (/gauntlet/i.test(lc)) return 'gauntlet_safety';
   if (/compounder/.test(lc) && /checklist/.test(lc)) return 'compounder_checklist';
   if (/terminal/.test(lc) && /value/.test(lc)) return 'terminal_value';
   if (/anti\s*fragile/i.test(lc)) return 'antifragile';

@@ -452,14 +452,14 @@ export default function CompaniesPage() {
                     <div className="company-card-avg-row">
                       <span
                         className="company-avg-score"
-                        title="Average of all weighted gem scores (0–10), same as Scores / Metrics"
+                        title="Average of quality weighted scores (0–10), same as Scores / Metrics Avg (quality)"
                       >
                         Avg score: {avgWeighted.toFixed(1)}
                       </span>
                       {eliteAvg && (
                         <span
                           className="company-crown-pair"
-                          title="Average weighted score above 9 (elite)"
+                          title="Average quality score above 9 (elite)"
                           aria-label="Elite: two crown markers for average score above 9"
                         >
                           <span className="tile-crown-emoji" aria-hidden>👑</span>

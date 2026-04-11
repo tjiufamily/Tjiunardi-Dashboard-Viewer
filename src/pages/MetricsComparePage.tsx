@@ -3,6 +3,8 @@ import { useSearchParams, useNavigate, Link, useLocation } from 'react-router-do
 import { useCompanies, useGems, useAllRuns } from '../hooks/useData';
 import { useScoresData } from '../hooks/useScores';
 import {
+  QUALITY_SCORE_TYPES,
+  SAFETY_SCORE_TYPES,
   SCORE_TYPES,
   SCORE_LABELS,
   type ScoreType,
@@ -19,6 +21,7 @@ import {
 } from '../lib/gemMetrics';
 import {
   avgOfScores,
+  avgOfSafetyScores,
   rowPassesColumnMins,
   parseMinInput,
   passesNumericBound,
@@ -75,6 +78,7 @@ type SortKey =
   | 'bitsDownsideRisk'
   | 'bitsToVcaTenYearCagr'
   | 'avg'
+  | 'safetyAvg'
   | ScoreType
   | `metric:${string}`;
 
@@ -912,6 +916,7 @@ export default function MetricsComparePage() {
           metricColumnIdsForNumericBounds,
           () => avgOfScores(r.scores),
           columnBoundModes,
+          () => avgOfSafetyScores(r.scores),
         )
       ) {
         return false;
@@ -985,6 +990,8 @@ export default function MetricsComparePage() {
       if (sortKey === 'bitsDownsideRisk') return nullLast(a.bitsDownsideRisk, b.bitsDownsideRisk);
       if (sortKey === 'bitsToVcaTenYearCagr') return nullLast(a.bitsToVcaTenYearCagr, b.bitsToVcaTenYearCagr);
       if (sortKey === 'avg') return nullLast(avgOfScores(a.scores), avgOfScores(b.scores));
+      if (sortKey === 'safetyAvg')
+        return nullLast(avgOfSafetyScores(a.scores), avgOfSafetyScores(b.scores));
       if (SCORE_TYPES.includes(sortKey as ScoreType)) {
         const st = sortKey as ScoreType;
         return nullLast(a.scores[st] ?? null, b.scores[st] ?? null);
@@ -1053,7 +1060,7 @@ export default function MetricsComparePage() {
   const loading =
     companiesLoading || gemsLoading || allRunsLoading || scoresLoading;
 
-  const scoreColumnCount = showWeightedScores ? SCORE_TYPES.length + 1 : 0;
+  const scoreColumnCount = showWeightedScores ? SCORE_TYPES.length + 2 : 0;
   const bitsDerivedColCount = showBitsDerived ? 2 : 0;
   const tableColSpan = 5 + bitsDerivedColCount + metricColumns.length + scoreColumnCount;
   const impliedCagrClass = (v: number | null | undefined) =>
@@ -1348,7 +1355,7 @@ export default function MetricsComparePage() {
                     </th>
                   ))}
                   {showWeightedScores &&
-                    SCORE_TYPES.map(st => (
+                    QUALITY_SCORE_TYPES.map(st => (
                       <th
                         key={st}
                         className="score-type-heading"
@@ -1359,7 +1366,31 @@ export default function MetricsComparePage() {
                         {arrow(st)}
                       </th>
                     ))}
-                  {showWeightedScores && <th onClick={() => toggleSort('avg')}>Avg{arrow('avg')}</th>}
+                  {showWeightedScores && (
+                    <th onClick={() => toggleSort('avg')} title="Average of quality weighted scores only">
+                      Avg (quality){arrow('avg')}
+                    </th>
+                  )}
+                  {showWeightedScores &&
+                    SAFETY_SCORE_TYPES.map(st => (
+                      <th
+                        key={st}
+                        className="score-type-heading"
+                        title={scoreColumnDescriptions[st]}
+                        onClick={() => toggleSort(st)}
+                      >
+                        {SCORE_LABELS[st]}
+                        {arrow(st)}
+                      </th>
+                    ))}
+                  {showWeightedScores && (
+                    <th
+                      onClick={() => toggleSort('safetyAvg')}
+                      title="Average when both safety scores are present"
+                    >
+                      Safety avg{arrow('safetyAvg')}
+                    </th>
+                  )}
                 </tr>
                 <tr className="scores-min-filter-row">
                   <th className="sticky-action filter-header-cell" aria-hidden />
@@ -1441,7 +1472,7 @@ export default function MetricsComparePage() {
                     </th>
                   ))}
                   {showWeightedScores &&
-                    SCORE_TYPES.map(st => (
+                    QUALITY_SCORE_TYPES.map(st => (
                       <th key={st} className="filter-header-cell">
                         <ColumnMinFilterCell
                           mode={columnBoundModes[`score:${st}`] ?? 'min'}
@@ -1462,7 +1493,36 @@ export default function MetricsComparePage() {
                         onModeChange={m => setBoundMode('avg', m)}
                         value={columnMins.avg ?? ''}
                         onValueChange={v => setMin('avg', v)}
-                        filterAriaLabel="Average score filter"
+                        filterAriaLabel="Quality average score filter"
+                        step="0.1"
+                        min="0"
+                        max="10"
+                      />
+                    </th>
+                  )}
+                  {showWeightedScores &&
+                    SAFETY_SCORE_TYPES.map(st => (
+                      <th key={st} className="filter-header-cell">
+                        <ColumnMinFilterCell
+                          mode={columnBoundModes[`score:${st}`] ?? 'min'}
+                          onModeChange={m => setBoundMode(`score:${st}`, m)}
+                          value={columnMins[`score:${st}`] ?? ''}
+                          onValueChange={v => setMin(`score:${st}`, v)}
+                          filterAriaLabel={`${SCORE_LABELS[st]} score filter`}
+                          step="0.1"
+                          min="0"
+                          max="10"
+                        />
+                      </th>
+                    ))}
+                  {showWeightedScores && (
+                    <th className="filter-header-cell">
+                      <ColumnMinFilterCell
+                        mode={columnBoundModes.safetyAvg ?? 'min'}
+                        onModeChange={m => setBoundMode('safetyAvg', m)}
+                        value={columnMins.safetyAvg ?? ''}
+                        onValueChange={v => setMin('safetyAvg', v)}
+                        filterAriaLabel="Safety average filter"
                         step="0.1"
                         min="0"
                         max="10"
@@ -1570,7 +1630,7 @@ export default function MetricsComparePage() {
                         </td>
                       ))}
                       {showWeightedScores &&
-                        SCORE_TYPES.map(st => (
+                        QUALITY_SCORE_TYPES.map(st => (
                           <td key={st} className={scoreCellClass(r.scores[st])}>
                             {fmtScore(r.scores[st])}
                           </td>
@@ -1578,6 +1638,17 @@ export default function MetricsComparePage() {
                       {showWeightedScores && (
                         <td className={scoreCellClass(avgOfScores(r.scores) ?? undefined)}>
                           {fmtScore(avgOfScores(r.scores))}
+                        </td>
+                      )}
+                      {showWeightedScores &&
+                        SAFETY_SCORE_TYPES.map(st => (
+                          <td key={st} className={scoreCellClass(r.scores[st])}>
+                            {fmtScore(r.scores[st])}
+                          </td>
+                        ))}
+                      {showWeightedScores && (
+                        <td className={scoreCellClass(avgOfSafetyScores(r.scores) ?? undefined)}>
+                          {fmtScore(avgOfSafetyScores(r.scores))}
                         </td>
                       )}
                     </tr>

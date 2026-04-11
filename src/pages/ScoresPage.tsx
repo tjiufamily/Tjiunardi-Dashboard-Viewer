@@ -1,9 +1,14 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useScoresData } from '../hooks/useScores';
-import { SCORE_TYPES, SCORE_LABELS } from '../types';
+import { QUALITY_SCORE_TYPES, SAFETY_SCORE_TYPES, SCORE_LABELS } from '../types';
 import type { ScoreType, CompanyScores } from '../types';
-import { avgOfScores, rowPassesColumnMins, type ColumnBoundMode } from '../lib/columnMinFilters';
+import {
+  avgOfScores,
+  avgOfSafetyScores,
+  rowPassesColumnMins,
+  type ColumnBoundMode,
+} from '../lib/columnMinFilters';
 import { ColumnMinFilterCell } from '../components/ColumnMinFilterCell';
 import { currentRouteWithSearch } from '../lib/navigationState';
 import {
@@ -12,7 +17,7 @@ import {
   downloadTextFile,
 } from '../lib/exportScores';
 
-type SortKey = 'name' | 'ticker' | ScoreType | 'avg';
+type SortKey = 'name' | 'ticker' | ScoreType | 'avg' | 'safetyAvg';
 type SortDir = 'asc' | 'desc';
 
 function fmt(v: number | null | undefined): string {
@@ -79,6 +84,7 @@ export default function ScoresPage() {
         [],
         () => avgOfScores(c.scores),
         columnBoundModes,
+        () => avgOfSafetyScores(c.scores),
       ),
     );
 
@@ -87,6 +93,8 @@ export default function ScoresPage() {
       if (sortKey === 'name') return a.companyName.localeCompare(b.companyName) * dir;
       if (sortKey === 'ticker') return a.ticker.localeCompare(b.ticker) * dir;
       if (sortKey === 'avg') return ((avgOfScores(a.scores) ?? -1) - (avgOfScores(b.scores) ?? -1)) * dir;
+      if (sortKey === 'safetyAvg')
+        return ((avgOfSafetyScores(a.scores) ?? -1) - (avgOfSafetyScores(b.scores) ?? -1)) * dir;
       const va = a.scores[sortKey as ScoreType] ?? -1;
       const vb = b.scores[sortKey as ScoreType] ?? -1;
       return (va - vb) * dir;
@@ -105,7 +113,7 @@ export default function ScoresPage() {
     return 'score-cell low';
   };
 
-  const colSpan = SCORE_TYPES.length + 4;
+  const colSpan = QUALITY_SCORE_TYPES.length + SAFETY_SCORE_TYPES.length + 5;
 
   // Sticky header (title row + filter row) needs a correct "stacked" offset.
   // We measure the first header row height and pin the filter row right beneath it.
@@ -169,7 +177,7 @@ export default function ScoresPage() {
                 Company{arrow('name')}
               </th>
               <th onClick={() => toggleSort('ticker')}>Ticker{arrow('ticker')}</th>
-              {SCORE_TYPES.map(st => (
+              {QUALITY_SCORE_TYPES.map(st => (
                 <th
                   key={st}
                   className="score-type-heading"
@@ -180,7 +188,23 @@ export default function ScoresPage() {
                   {arrow(st)}
                 </th>
               ))}
-              <th onClick={() => toggleSort('avg')}>Avg{arrow('avg')}</th>
+              <th onClick={() => toggleSort('avg')} title="Average of quality weighted scores only">
+                Avg (quality){arrow('avg')}
+              </th>
+              {SAFETY_SCORE_TYPES.map(st => (
+                <th
+                  key={st}
+                  className="score-type-heading"
+                  onClick={() => toggleSort(st)}
+                  title={scoreColumnDescriptions[st]}
+                >
+                  {SCORE_LABELS[st]}
+                  {arrow(st)}
+                </th>
+              ))}
+              <th onClick={() => toggleSort('safetyAvg')} title="Average when both safety scores are present">
+                Safety avg{arrow('safetyAvg')}
+              </th>
             </tr>
             <tr className="scores-min-filter-row">
               <th className="sticky-action filter-header-cell" aria-hidden />
@@ -200,7 +224,7 @@ export default function ScoresPage() {
                 />
               </th>
               <th className="filter-header-cell" aria-hidden />
-              {SCORE_TYPES.map(st => (
+              {QUALITY_SCORE_TYPES.map(st => (
                 <th key={st} className="filter-header-cell">
                   <ColumnMinFilterCell
                     mode={columnBoundModes[`score:${st}`] ?? 'min'}
@@ -220,7 +244,33 @@ export default function ScoresPage() {
                   onModeChange={m => setBoundMode('avg', m)}
                   value={columnMins.avg ?? ''}
                   onValueChange={v => setMin('avg', v)}
-                  filterAriaLabel="Average score filter"
+                  filterAriaLabel="Quality average score filter"
+                  step="0.1"
+                  min="0"
+                  max="10"
+                />
+              </th>
+              {SAFETY_SCORE_TYPES.map(st => (
+                <th key={st} className="filter-header-cell">
+                  <ColumnMinFilterCell
+                    mode={columnBoundModes[`score:${st}`] ?? 'min'}
+                    onModeChange={m => setBoundMode(`score:${st}`, m)}
+                    value={columnMins[`score:${st}`] ?? ''}
+                    onValueChange={v => setMin(`score:${st}`, v)}
+                    filterAriaLabel={`${SCORE_LABELS[st]} score filter`}
+                    step="0.1"
+                    min="0"
+                    max="10"
+                  />
+                </th>
+              ))}
+              <th className="filter-header-cell">
+                <ColumnMinFilterCell
+                  mode={columnBoundModes.safetyAvg ?? 'min'}
+                  onModeChange={m => setBoundMode('safetyAvg', m)}
+                  value={columnMins.safetyAvg ?? ''}
+                  onValueChange={v => setMin('safetyAvg', v)}
+                  filterAriaLabel="Safety average filter"
                   step="0.1"
                   min="0"
                   max="10"
@@ -257,13 +307,21 @@ export default function ScoresPage() {
                     </Link>
                   </td>
                   <td className="ticker-cell">{c.ticker}</td>
-                  {SCORE_TYPES.map(st => (
+                  {QUALITY_SCORE_TYPES.map(st => (
                     <td key={st} className={scoreCellClass(c.scores[st])}>
                       {fmt(c.scores[st])}
                     </td>
                   ))}
                   <td className={scoreCellClass(avgOfScores(c.scores) ?? undefined)}>
                     {fmt(avgOfScores(c.scores))}
+                  </td>
+                  {SAFETY_SCORE_TYPES.map(st => (
+                    <td key={st} className={scoreCellClass(c.scores[st])}>
+                      {fmt(c.scores[st])}
+                    </td>
+                  ))}
+                  <td className={scoreCellClass(avgOfSafetyScores(c.scores) ?? undefined)}>
+                    {fmt(avgOfSafetyScores(c.scores))}
                   </td>
                 </tr>
               ))

@@ -162,6 +162,9 @@ export function buildPositionSizingMarkdown(
     `- **After CAGR:** ${result.afterCagr.toFixed(2)}%`,
     `- **Probability:** ×${result.probabilityMultiplier} — ${result.probabilityNote.replace(/\|/g, '/')}`,
     `- **After probability:** ${result.afterProbability.toFixed(2)}%`,
+    `- **After downside (Stage 4):** ${result.afterDownside.toFixed(2)}%`,
+    `- **Stage 5 safety:** ${result.safetyNote.replace(/\|/g, '/')}`,
+    `- **Safety haircut:** ${result.safetyHaircut == null ? '—' : `×${result.safetyHaircut}`}`,
     '',
     '## Probability inputs (selected metrics + avg)',
     '',
@@ -192,7 +195,7 @@ export function buildPositionSizingMarkdown(
 
   lines.push(
     '',
-    `- **Average weighted score:** ${result.averageWeightedScore == null ? '—' : result.averageWeightedScore.toFixed(2)}`,
+    `- **Average quality score:** ${result.averageWeightedScore == null ? '—' : result.averageWeightedScore.toFixed(2)}`,
     `- **Avg > ${result.avgSuperiorThreshold} rule applied:** ${result.avgScoreRuleApplied ? 'yes' : 'no'}`,
     '',
     '## Stages',
@@ -200,6 +203,7 @@ export function buildPositionSizingMarkdown(
     `- ${result.cagrNote}`,
     `- ${result.probabilityNote}`,
     `- ${result.downsideNote}`,
+    `- ${result.safetyNote}`,
     '',
   );
 

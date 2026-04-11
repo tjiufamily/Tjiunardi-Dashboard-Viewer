@@ -1,6 +1,6 @@
-import { SCORE_TYPES, SCORE_LABELS } from '../types';
+import { QUALITY_SCORE_TYPES, SAFETY_SCORE_TYPES, SCORE_LABELS } from '../types';
 import type { CompanyScores, ScoreType } from '../types';
-import { avgOfScores } from './columnMinFilters';
+import { avgOfScores, avgOfSafetyScores } from './columnMinFilters';
 
 export function sanitizeFilename(s: string, max = 56): string {
   const t = s
@@ -30,18 +30,31 @@ function escapeCSV(val: string | number | null | undefined): string {
 export function buildScoresLandscapeCSV(companies: CompanyScores[]): string {
   const rows: string[] = [];
   
-  const headers = ['Company', 'Ticker', ...SCORE_TYPES.map(st => SCORE_LABELS[st]), 'Avg'];
+  const headers = [
+    'Company',
+    'Ticker',
+    ...QUALITY_SCORE_TYPES.map(st => SCORE_LABELS[st]),
+    'Avg (quality)',
+    ...SAFETY_SCORE_TYPES.map(st => SCORE_LABELS[st]),
+    'Safety avg',
+  ];
   rows.push(headers.map(escapeCSV).join(','));
 
   for (const c of companies) {
-    const scores = SCORE_TYPES.map(st => {
+    const qualityCells = QUALITY_SCORE_TYPES.map(st => {
       const v = c.scores[st];
       return v != null ? v.toFixed(2) : '';
     });
     const avg = avgOfScores(c.scores);
     const avgStr = avg != null ? avg.toFixed(2) : '';
-    
-    const row = [c.companyName, c.ticker, ...scores, avgStr];
+    const safetyCells = SAFETY_SCORE_TYPES.map(st => {
+      const v = c.scores[st];
+      return v != null ? v.toFixed(2) : '';
+    });
+    const safetyAvg = avgOfSafetyScores(c.scores);
+    const safetyAvgStr = safetyAvg != null ? safetyAvg.toFixed(2) : '';
+
+    const row = [c.companyName, c.ticker, ...qualityCells, avgStr, ...safetyCells, safetyAvgStr];
     rows.push(row.map(escapeCSV).join(','));
   }
 

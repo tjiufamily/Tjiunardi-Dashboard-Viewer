@@ -1,4 +1,4 @@
-import { SCORE_TYPES } from '../types';
+import { QUALITY_SCORE_TYPES, SCORE_TYPES } from '../types';
 import type { ScoreType } from '../types';
 
 /** 'min' = keep rows with value ≥ threshold; 'max' = keep rows with value ≤ threshold. */
@@ -28,10 +28,19 @@ export function passesNumericBound(
   return mode === 'min' ? value >= threshold : value <= threshold;
 }
 
+/** Mean of quality weighted scores only (excludes safety scores). */
 export function avgOfScores(scores: Partial<Record<ScoreType, number>>): number | null {
-  const vals = SCORE_TYPES.map(st => scores[st]).filter((v): v is number => v != null);
+  const vals = QUALITY_SCORE_TYPES.map(st => scores[st]).filter((v): v is number => v != null);
   if (vals.length === 0) return null;
   return vals.reduce((a, b) => a + b, 0) / vals.length;
+}
+
+/** Mean of pre-mortem and gauntlet safety scores only when both are present (same rule as Stage 5 mean). */
+export function avgOfSafetyScores(scores: Partial<Record<ScoreType, number>>): number | null {
+  const a = scores.pre_mortem_safety;
+  const b = scores.gauntlet_safety;
+  if (a == null || b == null) return null;
+  return (a + b) / 2;
 }
 
 /** Row passes if every set threshold is satisfied per-column mode (min = ≥, max = ≤). Missing values fail when a bound is set. */
@@ -42,6 +51,7 @@ export function rowPassesColumnMins(
   metricKeys: string[],
   getAvg: () => number | null,
   modes?: Record<string, ColumnBoundMode>,
+  getSafetyAvg?: () => number | null,
 ): boolean {
   for (const k of metricKeys) {
     const key = `metric:${k}`;
@@ -61,6 +71,11 @@ export function rowPassesColumnMins(
   if (tAvg != null) {
     const a = getAvg();
     if (!passesNumericBound(a, tAvg, boundModeForKey(modes, 'avg'))) return false;
+  }
+  const tSafetyAvg = parseMinInput(mins.safetyAvg ?? '');
+  if (tSafetyAvg != null && getSafetyAvg) {
+    const a = getSafetyAvg();
+    if (!passesNumericBound(a, tSafetyAvg, boundModeForKey(modes, 'safetyAvg'))) return false;
   }
   return true;
 }

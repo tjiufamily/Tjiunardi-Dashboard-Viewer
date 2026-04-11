@@ -21,6 +21,8 @@ import {
   DEFAULT_AVG_SUPERIOR_MAX_PCT,
   PROBABILITY_SCORE_TYPES,
   computeStagedTranchePlan,
+  DEFAULT_SAFETY_MEAN_TIERS,
+  SAFETY_HARD_MIN,
 } from '../lib/positionSizing';
 import type {
   ScoreThreshold,
@@ -28,6 +30,7 @@ import type {
   DownsideBracket,
   SizingResult,
   ProbabilityTierRule,
+  SafetyMeanTierRule,
 } from '../lib/positionSizing';
 import {
   findValueCompoundingAnalystGem,
@@ -55,6 +58,7 @@ const LS_SIZING_PROBABILITY = 'tjiunardi.dashboard.sizing.probability.v1';
 const LS_SIZING_STAGE_TOGGLES = 'tjiunardi.dashboard.sizing.stageToggles.v1';
 const LS_SIZING_FORM = 'tjiunardi.dashboard.sizing.form.v1';
 const LS_SIZING_FAVOURITES = 'tjiunardi.dashboard.sizing.favourites.v1';
+const LS_SIZING_SAFETY = 'tjiunardi.dashboard.sizing.safety.v1';
 const MAX_FAVOURITES = 7;
 
 /** Cap 10Y target slider and inputs vs current quote so bad gem data cannot explode the range. */
@@ -81,11 +85,16 @@ type PositionSizingFavouriteSettings = {
   cagrBrackets: CagrBracket[];
   cagrFloor: number;
   downsideBrackets: DownsideBracket[];
+  /** Omitted in older favourites — defaults applied when loading. */
+  safetyApplyMinRule?: boolean;
+  safetyHardMin?: number;
+  safetyMeanTiers?: SafetyMeanTierRule[];
   stageToggles: {
     stage1: boolean;
     stage2: boolean;
     stage3: boolean;
     stage4: boolean;
+    stage5: boolean;
   };
 };
 
@@ -362,6 +371,7 @@ export default function PositionSizingPage() {
   const formStateHydratedRef = useRef(false);
   const sizingDefaultsLoaded = useRef(false);
   const probabilitySettingsHydratedRef = useRef(false);
+  const safetySettingsHydratedRef = useRef(false);
 
   const [downside, setDownside] = useState<string>('');
   const [downsidePrice, setDownsidePrice] = useState<string>('');
@@ -474,11 +484,15 @@ export default function PositionSizingPage() {
   const [cagrBrackets, setCagrBrackets] = useState<CagrBracket[]>(() => [...DEFAULT_CAGR_BRACKETS]);
   const [cagrFloor, setCagrFloor] = useState(DEFAULT_CAGR_FLOOR);
   const [downsideBrackets, setDownsideBrackets] = useState<DownsideBracket[]>(() => [...DEFAULT_DOWNSIDE_BRACKETS]);
+  const [safetyApplyMinRule, setSafetyApplyMinRule] = useState(false);
+  const [safetyHardMin, setSafetyHardMin] = useState(SAFETY_HARD_MIN);
+  const [safetyMeanTiers, setSafetyMeanTiers] = useState<SafetyMeanTierRule[]>(() => [...DEFAULT_SAFETY_MEAN_TIERS]);
   const [stageToggles, setStageToggles] = useState({
     stage1: true,
     stage2: true,
     stage3: true,
     stage4: true,
+    stage5: true,
   });
   const [favourites, setFavourites] = useState<PositionSizingFavourite[]>([]);
   const [favouritesHydrated, setFavouritesHydrated] = useState(false);
@@ -536,18 +550,34 @@ export default function PositionSizingPage() {
           stage2?: boolean;
           stage3?: boolean;
           stage4?: boolean;
+          stage5?: boolean;
         };
         setStageToggles({
           stage1: o.stage1 ?? true,
           stage2: o.stage2 ?? true,
           stage3: o.stage3 ?? true,
           stage4: o.stage4 ?? true,
+          stage5: o.stage5 ?? true,
         });
+      }
+      const rawSf = localStorage.getItem(LS_SIZING_SAFETY);
+      if (rawSf) {
+        const o = JSON.parse(rawSf) as {
+          safetyApplyMinRule?: boolean;
+          safetyHardMin?: number;
+          safetyMeanTiers?: SafetyMeanTierRule[];
+        };
+        if (typeof o.safetyApplyMinRule === 'boolean') setSafetyApplyMinRule(o.safetyApplyMinRule);
+        if (typeof o.safetyHardMin === 'number') setSafetyHardMin(o.safetyHardMin);
+        if (Array.isArray(o.safetyMeanTiers) && o.safetyMeanTiers.length > 0) {
+          setSafetyMeanTiers(o.safetyMeanTiers);
+        }
       }
     } catch {
       /* ignore */
     }
     probabilitySettingsHydratedRef.current = true;
+    safetySettingsHydratedRef.current = true;
   }, []);
 
   useEffect(() => {
@@ -565,6 +595,22 @@ export default function PositionSizingPage() {
       /* ignore */
     }
   }, [probabilityTiers, probabilityAllBelow, probabilityIncludedScoreTypes]);
+
+  useEffect(() => {
+    if (!safetySettingsHydratedRef.current) return;
+    try {
+      localStorage.setItem(
+        LS_SIZING_SAFETY,
+        JSON.stringify({
+          safetyApplyMinRule,
+          safetyHardMin,
+          safetyMeanTiers,
+        }),
+      );
+    } catch {
+      /* ignore */
+    }
+  }, [safetyApplyMinRule, safetyHardMin, safetyMeanTiers]);
 
   useEffect(() => {
     try {
@@ -626,6 +672,17 @@ export default function PositionSizingPage() {
       /* ignore */
     }
   }, [downsideBrackets]);
+
+  const saveSafetyRulesDefault = useCallback(() => {
+    try {
+      localStorage.setItem(
+        LS_SIZING_SAFETY,
+        JSON.stringify({ safetyApplyMinRule, safetyHardMin, safetyMeanTiers }),
+      );
+    } catch {
+      /* ignore */
+    }
+  }, [safetyApplyMinRule, safetyHardMin, safetyMeanTiers]);
 
   useEffect(() => {
     try {
@@ -833,6 +890,9 @@ export default function PositionSizingPage() {
       cagrBrackets,
       cagrFloor,
       downsideBrackets,
+      safetyApplyMinRule,
+      safetyHardMin,
+      safetyMeanTiers,
       stageToggles,
     };
   }, [
@@ -853,6 +913,9 @@ export default function PositionSizingPage() {
     cagrBrackets,
     cagrFloor,
     downsideBrackets,
+    safetyApplyMinRule,
+    safetyHardMin,
+    safetyMeanTiers,
     stageToggles,
   ]);
 
@@ -896,7 +959,22 @@ export default function PositionSizingPage() {
       setCagrBrackets(fav.settings.cagrBrackets);
       setCagrFloor(fav.settings.cagrFloor);
       setDownsideBrackets(fav.settings.downsideBrackets);
-      setStageToggles(fav.settings.stageToggles);
+      setSafetyApplyMinRule(fav.settings.safetyApplyMinRule ?? false);
+      setSafetyHardMin(
+        typeof fav.settings.safetyHardMin === 'number' ? fav.settings.safetyHardMin : SAFETY_HARD_MIN,
+      );
+      setSafetyMeanTiers(
+        fav.settings.safetyMeanTiers != null && fav.settings.safetyMeanTiers.length > 0
+          ? fav.settings.safetyMeanTiers
+          : [...DEFAULT_SAFETY_MEAN_TIERS],
+      );
+      setStageToggles({
+        stage1: fav.settings.stageToggles.stage1 ?? true,
+        stage2: fav.settings.stageToggles.stage2 ?? true,
+        stage3: fav.settings.stageToggles.stage3 ?? true,
+        stage4: fav.settings.stageToggles.stage4 ?? true,
+        stage5: fav.settings.stageToggles.stage5 ?? true,
+      });
       setSearchParams({
         company: fav.companyId,
         cagr: fav.settings.cagr,
@@ -1004,6 +1082,10 @@ export default function PositionSizingPage() {
       includeStage2: stageToggles.stage2,
       includeStage3: stageToggles.stage3,
       includeStage4: stageToggles.stage4,
+      includeStage5: stageToggles.stage5,
+      safetyApplyMinRule,
+      safetyHardMin,
+      safetyMeanTiers,
     });
   }, [
     selectedCompany,
@@ -1021,17 +1103,23 @@ export default function PositionSizingPage() {
     probabilityAllBelow,
     probabilityIncludedScoreTypes,
     stageToggles,
+    safetyApplyMinRule,
+    safetyHardMin,
+    safetyMeanTiers,
   ]);
 
   const stageFailure = useMemo(() => {
-    if (!result) return { stage1: false, stage2: false, stage3: false, stage4: false };
+    if (!result)
+      return { stage1: false, stage2: false, stage3: false, stage4: false, stage5: false };
 
     const stage1 = stageToggles.stage1 && result.basePosition === 0;
     const stage2 = stageToggles.stage2 && result.basePosition > 0 && result.afterCagr === 0;
     const stage3 = stageToggles.stage3 && result.afterCagr > 0 && result.afterProbability === 0;
-    const stage4 = stageToggles.stage4 && result.afterProbability > 0 && result.finalPosition === 0;
+    const stage4 = stageToggles.stage4 && result.afterProbability > 0 && result.afterDownside === 0;
+    const stage5 =
+      stageToggles.stage5 && result.afterDownside > 0 && result.finalPosition === 0;
 
-    return { stage1, stage2, stage3, stage4 };
+    return { stage1, stage2, stage3, stage4, stage5 };
   }, [result, stageToggles]);
 
   const downsideAnchorPrice = useMemo(() => {
@@ -1109,14 +1197,14 @@ export default function PositionSizingPage() {
               className="sizing-process-tip"
               tabIndex={0}
               role="group"
-              aria-label="Position Sizing Calculator — how the four-stage process works (hover or focus for details)"
+              aria-label="Position Sizing Calculator — how the five-stage process works (hover or focus for details)"
             >
               <span className="sizing-process-tip-title">Position Sizing Calculator</span>
               <span className="sizing-process-tip-icon" aria-hidden>
                 ⓘ
               </span>
               <span className="sizing-process-tip-panel">
-                <strong className="sizing-process-tip-heading">Four stages (in order)</strong>
+                <strong className="sizing-process-tip-heading">Five stages (in order)</strong>
                 <ol className="sizing-process-tip-list">
                   <li>
                     <strong>Weighted scores → base %</strong> — Each research metric maps to a max position cap; the
@@ -1134,6 +1222,10 @@ export default function PositionSizingPage() {
                   <li>
                     <strong>Downside haircut</strong> — Trims the result when expected drawdown is large, so you do not
                     size as if risk were absent (and can signal “wait” at extreme downside).
+                  </li>
+                  <li>
+                    <strong>Safety (pre-mortem &amp; gauntlet)</strong> — Optional minimum-of-two gate and mean-based
+                    haircuts; configurable under Adjustable Rules.
                   </li>
                 </ol>
                 <p className="sizing-process-tip-strength">
@@ -1158,7 +1250,8 @@ export default function PositionSizingPage() {
         </div>
         <p className="sizing-subtitle">
           Select a company to see recommended position size from weighted scores, CAGR, probability (selected quality
-          metrics + their average), then downside haircut. Adjustable rules can be saved as your defaults in this browser.
+          metrics + their average), downside haircut, then optional safety (pre-mortem &amp; gauntlet). Adjustable rules
+          can be saved as your defaults in this browser.
         </p>
       </div>
 
@@ -1341,6 +1434,7 @@ export default function PositionSizingPage() {
                     fav.settings.stageToggles.stage2,
                     fav.settings.stageToggles.stage3,
                     fav.settings.stageToggles.stage4,
+                    fav.settings.stageToggles.stage5 ?? true,
                   ].filter(Boolean).length;
                   return (
                     <div key={fav.companyId} className="sizing-favourite-item" role="listitem">
@@ -1355,7 +1449,7 @@ export default function PositionSizingPage() {
                         </span>
                         <span className="sizing-favourite-meta">
                           CAGR {fav.settings.cagr || '—'}% | Downside {fav.settings.downside || '—'}% | Prob{' '}
-                          {fav.settings.probabilityIncludedScoreTypes.length} metrics | Stages {activeStages}/4
+                          {fav.settings.probabilityIncludedScoreTypes.length} metrics | Stages {activeStages}/5
                         </span>
                       </button>
                       <button
@@ -1988,6 +2082,103 @@ export default function PositionSizingPage() {
               + Add bracket
             </button>
           </div>
+
+          <div className="rules-section">
+            <div className="rules-section-toolbar">
+              <h4 className="rules-section-title">Stage 5 — Safety (pre-mortem &amp; gauntlet)</h4>
+              <button type="button" className="btn btn-sm btn-ghost" onClick={saveSafetyRulesDefault}>
+                Make current settings default
+              </button>
+            </div>
+            <p className="rules-hint">
+              When both safety scores are present, Stage 5 applies after downside. Highest matching mean tier wins (same
+              idea as probability tiers).
+            </p>
+            <label className="rules-hint">
+              <input
+                type="checkbox"
+                checked={safetyApplyMinRule}
+                onChange={e => setSafetyApplyMinRule(e.target.checked)}
+              />{' '}
+              Apply <strong>minimum-of-two</strong> rule: if min(pre-mortem, gauntlet) &lt; threshold → ×0 (position
+              size zero)
+            </label>
+            <p className="rules-hint">
+              Threshold (0–10):{' '}
+              <input
+                type="number"
+                step="0.5"
+                min={0}
+                max={10}
+                value={safetyHardMin}
+                onChange={e => setSafetyHardMin(Number(e.target.value))}
+                className="inline-input"
+                disabled={!safetyApplyMinRule}
+              />
+            </p>
+            <h4 className="rules-subheading">Mean-based haircuts (safety avg)</h4>
+            <table className="rules-table">
+              <thead>
+                <tr>
+                  <th>If safety avg ≥</th>
+                  <th>Multiplier</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {safetyMeanTiers.map((b, i) => (
+                  <tr key={i}>
+                    <td>
+                      <input
+                        type="number"
+                        step="0.5"
+                        value={b.minAvg}
+                        onChange={e => {
+                          const next = [...safetyMeanTiers];
+                          next[i] = { ...next[i], minAvg: Number(e.target.value) };
+                          setSafetyMeanTiers(next);
+                        }}
+                        className="rules-input"
+                      />
+                    </td>
+                    <td>
+                      ×
+                      <input
+                        type="number"
+                        step="0.05"
+                        min={0}
+                        value={b.multiplier}
+                        onChange={e => {
+                          const next = [...safetyMeanTiers];
+                          next[i] = { ...next[i], multiplier: Number(e.target.value) };
+                          setSafetyMeanTiers(next);
+                        }}
+                        className="rules-input"
+                      />
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="btn-icon"
+                        onClick={() => setSafetyMeanTiers(safetyMeanTiers.filter((_, j) => j !== i))}
+                      >
+                        ✕
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() =>
+                setSafetyMeanTiers([...safetyMeanTiers, { minAvg: 5.5, multiplier: 0.5 }])
+              }
+            >
+              + Add tier
+            </button>
+          </div>
         </div>
       )}
 
@@ -2034,6 +2225,14 @@ export default function PositionSizingPage() {
               />{' '}
               Stage 4
             </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={stageToggles.stage5}
+                onChange={e => setStageToggles(prev => ({ ...prev, stage5: e.target.checked }))}
+              />{' '}
+              Stage 5
+            </label>
           </div>
 
           {result.warnings.length > 0 && (
@@ -2051,10 +2250,10 @@ export default function PositionSizingPage() {
               {stageFailure.stage1 ? <span className="sizing-stage-fail-tag">Failed: reduced to 0%</span> : null}
             </h4>
             <p className="stage-description">
-              Each weighted score (0–10) maps to a maximum position % using the score brackets you
-              can adjust. To stay conservative, the calculator takes the <strong>minimum</strong> of
-              all weighted-score caps as a <strong>bracket base</strong>. If the{' '}
-              <strong>average weighted score</strong> (mean of all present scores) is above{' '}
+              Each <strong>quality</strong> weighted score (0–10) maps to a maximum position % using the score brackets you
+              can adjust. Pre-mortem and gauntlet safety scores are not used here. To stay conservative, the calculator takes the <strong>minimum</strong> of
+              all quality-score caps as a <strong>bracket base</strong>. If the{' '}
+              <strong>average quality score</strong> (mean of present quality scores only) is above{' '}
               {result.avgSuperiorThreshold}, the base position is set to{' '}
               {result.avgSuperiorMaxPct}% — this rule supersedes the bracket minimum.
             </p>
@@ -2219,12 +2418,59 @@ export default function PositionSizingPage() {
               <span className="stage-value">{result.downsideNote}</span>
             </div>
             <div className="stage-row stage-result">
+              <span className="stage-label">After downside:</span>
+              <span className="stage-value"><strong>{fmt(result.afterDownside, 2)}%</strong></span>
+            </div>
+          </div>
+
+          {/* Stage 5: Safety */}
+          <div
+            className={`sizing-stage ${stageToggles.stage5 ? '' : 'sizing-stage--disabled'} ${stageFailure.stage5 ? 'sizing-stage--failed' : ''}`}
+          >
+            <h4>
+              Stage 5: Pre-Mortem &amp; Gauntlet Safety
+              {stageFailure.stage5 ? <span className="sizing-stage-fail-tag">Failed: reduced to 0%</span> : null}
+            </h4>
+            <p className="stage-description">
+              Uses pre-mortem and gauntlet safety scores (higher = safer). Rules, minimum-of-two threshold, and mean tiers
+              are set under <strong>Adjustable Rules</strong> → Stage 5. If either score is missing, this stage is skipped
+              (×1).
+            </p>
+            <div className="stage-row">
+              <span className="stage-label">Pre-Mortem Safety:</span>
+              <span className="stage-value">
+                {selectedCompany.scores.pre_mortem_safety != null
+                  ? fmt(selectedCompany.scores.pre_mortem_safety, 2)
+                  : '—'}
+              </span>
+            </div>
+            <div className="stage-row">
+              <span className="stage-label">Gauntlet Safety:</span>
+              <span className="stage-value">
+                {selectedCompany.scores.gauntlet_safety != null
+                  ? fmt(selectedCompany.scores.gauntlet_safety, 2)
+                  : '—'}
+              </span>
+            </div>
+            <div className="stage-row">
+              <span className="stage-label">Rule:</span>
+              <span className="stage-value">{result.safetyNote}</span>
+            </div>
+            <div className="stage-row">
+              <span className="stage-label">Haircut:</span>
+              <span className="stage-value">
+                {result.safetyHaircut == null
+                  ? '—'
+                  : `×${Number.isInteger(result.safetyHaircut) ? result.safetyHaircut : fmt(result.safetyHaircut, 2)}`}
+              </span>
+            </div>
+            <div className="stage-row stage-result">
               <span className="stage-label">Final position:</span>
               <span className="stage-value"><strong>{fmt(result.finalPosition, 2)}%</strong></span>
             </div>
           </div>
 
-          {/* Single entry (Stage 4) — directly after Stage 4 */}
+          {/* Single entry — after Stage 5 */}
           <div
             className={`sizing-final sizing-final--current sizing-final--solo ${result.finalPosition === 0 ? 'sizing-final--zero' : ''}`}
             role="region"
@@ -2233,14 +2479,14 @@ export default function PositionSizingPage() {
             <span className="sizing-final-badge" aria-hidden="true">
               Single entry
             </span>
-            <div className="sizing-final-label">One shot at today’s price + your expected downside (Stage 4)</div>
+            <div className="sizing-final-label">One shot at today’s price + downside + safety (after Stage 5)</div>
             <div className="sizing-final-value">
               {result.finalPosition === 0
                 ? 'Do not invest / Wait for better entry'
                 : `${fmt(result.finalPosition, 2)}% of portfolio`}
             </div>
             <p className="sizing-final-hint">
-              Uses your downside % and haircut rules above — not the anti-martingale ladder below.
+              Uses downside (Stage 4) and safety scores (Stage 5) when enabled — not the anti-martingale ladder below.
             </p>
           </div>
 

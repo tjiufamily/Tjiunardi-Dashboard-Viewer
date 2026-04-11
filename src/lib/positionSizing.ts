@@ -1,5 +1,5 @@
 import type { ScoreType } from '../types';
-import { SCORE_TYPES, SCORE_LABELS } from '../types';
+import { QUALITY_SCORE_TYPES, SAFETY_SCORE_TYPES, SCORE_LABELS } from '../types';
 
 export type ScoreThreshold = { minScore: number; maxPct: number };
 
@@ -76,6 +76,37 @@ export const DEFAULT_PROBABILITY_TIERS: ProbabilityTierRule[] = [
 
 /** If all inputs (N selected metrics + their average) are strictly below this, multiplier is 0. */
 export const DEFAULT_PROBABILITY_ALL_BELOW = 7;
+
+/** Default Stage 5: if min(pre-mortem, gauntlet) is below this (when min rule is on), position becomes 0. */
+export const SAFETY_HARD_MIN = 5;
+
+export type SafetyMeanTierRule = { minAvg: number; multiplier: number };
+
+/** Default mean-based haircuts when min-of-two rule passes (highest matching tier wins). */
+export const DEFAULT_SAFETY_MEAN_TIERS: SafetyMeanTierRule[] = [
+  { minAvg: 8, multiplier: 1 },
+  { minAvg: 7, multiplier: 0.85 },
+  { minAvg: 6, multiplier: 0.65 },
+  { minAvg: 5, multiplier: 0.4 },
+];
+
+export type Stage5Options = {
+  /** If true, min(pre-mortem, gauntlet) &lt; hardMin → ×0. If false, only mean tiers apply. */
+  applyMinRule: boolean;
+  hardMin: number;
+  meanTiers: SafetyMeanTierRule[];
+};
+
+export function safetyMeanHaircutFromTiers(safetyAvg: number, tiers: SafetyMeanTierRule[]): number {
+  const sorted = [...tiers]
+    .filter(t => Number.isFinite(t.minAvg) && Number.isFinite(t.multiplier))
+    .sort((a, b) => b.minAvg - a.minAvg);
+  if (sorted.length === 0) return 0;
+  for (const t of sorted) {
+    if (safetyAvg >= t.minAvg) return t.multiplier;
+  }
+  return 0;
+}
 
 export type ProbabilityMultiplierOptions = {
   tiers?: ProbabilityTierRule[];
@@ -193,6 +224,13 @@ export type SizingInputs = {
   includeStage2?: boolean;
   includeStage3?: boolean;
   includeStage4?: boolean;
+  includeStage5?: boolean;
+  /** Stage 5: if true, min &lt; hardMin forces ×0. Default false. */
+  safetyApplyMinRule?: boolean;
+  /** Stage 5: threshold for minimum-of-two rule (when enabled). Default {@link SAFETY_HARD_MIN}. */
+  safetyHardMin?: number;
+  /** Stage 5: mean-based tiers (highest matching minAvg wins). */
+  safetyMeanTiers?: SafetyMeanTierRule[];
 };
 
 export type MetricResult = {
@@ -225,14 +263,85 @@ export type SizingResult = {
   afterProbability: number;
   downsideHaircut: number | null;
   downsideNote: string;
+  /** Position % after Stage 4 (downside haircut), before Stage 5. */
+  afterDownside: number;
+  /** Min of the two safety scores when both present. */
+  safetyMin: number | null;
+  /** Mean of pre-mortem + gauntlet safety when both present. */
+  safetyAverage: number | null;
+  /** Multiplier applied after downside (1 = none). Null when Stage 5 skipped (incomplete scores). */
+  safetyHaircut: number | null;
+  safetyNote: string;
+  /** True when Stage 5 is off or both safety scores are missing (no safety haircut applied). */
+  safetySkipped: boolean;
   finalPosition: number;
   warnings: string[];
 };
 
 function meanWeightedScore(scores: Partial<Record<ScoreType, number>>): number | null {
-  const vals = SCORE_TYPES.map(st => scores[st]).filter((v): v is number => v != null);
+  const vals = QUALITY_SCORE_TYPES.map(st => scores[st]).filter((v): v is number => v != null);
   if (vals.length === 0) return null;
   return vals.reduce((a, b) => a + b, 0) / vals.length;
+}
+
+export type Stage5SafetyPreview = {
+  safetyMin: number | null;
+  safetyAverage: number | null;
+  haircut: number | null;
+  note: string;
+  skipped: boolean;
+};
+
+function resolveStage5Options(partial?: Partial<Stage5Options>): Stage5Options {
+  return {
+    applyMinRule: partial?.applyMinRule ?? false,
+    hardMin: partial?.hardMin ?? SAFETY_HARD_MIN,
+    meanTiers:
+      partial?.meanTiers != null && partial.meanTiers.length > 0
+        ? partial.meanTiers
+        : DEFAULT_SAFETY_MEAN_TIERS,
+  };
+}
+
+/** Stage 5: optional min-of-two gate, then mean-based tiers. */
+export function computeStage5Safety(
+  scores: Partial<Record<ScoreType, number>>,
+  options?: Partial<Stage5Options>,
+): Stage5SafetyPreview {
+  const o = resolveStage5Options(options);
+  const s1 = scores.pre_mortem_safety;
+  const s2 = scores.gauntlet_safety;
+  if (s1 == null || s2 == null) {
+    return {
+      safetyMin: null,
+      safetyAverage: null,
+      haircut: null,
+      note: 'Safety scores incomplete — Stage 5 skipped (×1).',
+      skipped: true,
+    };
+  }
+  const safetyMin = Math.min(s1, s2);
+  const safetyAverage = (s1 + s2) / 2;
+  if (o.applyMinRule && safetyMin < o.hardMin) {
+    return {
+      safetyMin,
+      safetyAverage,
+      haircut: 0,
+      note: `min(${s1.toFixed(2)}, ${s2.toFixed(2)}) < ${o.hardMin} → ×0`,
+      skipped: false,
+    };
+  }
+  const h = safetyMeanHaircutFromTiers(safetyAverage, o.meanTiers);
+  const note = o.applyMinRule
+    ? `min ≥ ${o.hardMin}, avg ${safetyAverage.toFixed(2)} → ×${h}`
+    : `avg ${safetyAverage.toFixed(2)} → ×${h} (min rule off)`;
+  return {
+    safetyMin,
+    safetyAverage,
+    haircut: h,
+    note,
+    skipped: false,
+  };
 }
 
 function resolveScoreBracket(
@@ -254,11 +363,12 @@ export function calculatePositionSize(inputs: SizingInputs): SizingResult {
   const includeStage2 = inputs.includeStage2 ?? true;
   const includeStage3 = inputs.includeStage3 ?? true;
   const includeStage4 = inputs.includeStage4 ?? true;
+  const includeStage5 = inputs.includeStage5 ?? true;
 
   const warnings: string[] = [];
   const metricResults: MetricResult[] = [];
 
-  for (const st of SCORE_TYPES) {
+  for (const st of QUALITY_SCORE_TYPES) {
     const score = inputs.scores[st] ?? null;
     if (score == null) {
       metricResults.push({ scoreType: st, score: null, maxPct: 0, bracket: 'No score → 0%' });
@@ -341,12 +451,12 @@ export function calculatePositionSize(inputs: SizingInputs): SizingResult {
 
   let downsideHaircut: number | null = null;
   let downsideNote = '';
-  let finalPosition = afterProbability;
+  let afterDownside = afterProbability;
 
   if (!includeStage4) {
     downsideHaircut = 1;
     downsideNote = 'Stage 4 disabled — using post-probability position as-is.';
-    finalPosition = afterProbability;
+    afterDownside = afterProbability;
   } else if (inputs.downside == null) {
     downsideNote = 'Downside not entered — using post-probability position as-is.';
     warnings.push('Enter expected downside to refine sizing.');
@@ -358,11 +468,11 @@ export function calculatePositionSize(inputs: SizingInputs): SizingResult {
         if (b.haircut === 0) {
           downsideHaircut = 0;
           downsideNote = `Downside ${inputs.downside}% > ${b.maxDownside}% — suggest waiting for better entry.`;
-          finalPosition = 0;
+          afterDownside = 0;
         } else {
           downsideHaircut = b.haircut;
           downsideNote = `Downside ${inputs.downside}% > ${b.maxDownside}% → ${Math.round(b.haircut * 100)}% of post-probability`;
-          finalPosition = afterProbability * b.haircut;
+          afterDownside = afterProbability * b.haircut;
         }
         matched = true;
         break;
@@ -371,7 +481,49 @@ export function calculatePositionSize(inputs: SizingInputs): SizingResult {
     if (!matched) {
       downsideHaircut = 1;
       downsideNote = `Downside ${inputs.downside}% ≤ ${sorted[sorted.length - 1]?.maxDownside ?? 10}% → 100%`;
-      finalPosition = afterProbability;
+      afterDownside = afterProbability;
+    }
+  }
+
+  afterDownside = Math.round(afterDownside * 100) / 100;
+
+  const stage5Opts: Partial<Stage5Options> = {
+    applyMinRule: inputs.safetyApplyMinRule ?? false,
+    hardMin: inputs.safetyHardMin ?? SAFETY_HARD_MIN,
+    meanTiers: inputs.safetyMeanTiers,
+  };
+
+  let safetyMin: number | null = null;
+  let safetyAverage: number | null = null;
+  let safetyHaircut: number | null = null;
+  let safetyNote = '';
+  let safetySkipped = true;
+  let finalPosition = afterDownside;
+
+  if (!includeStage5) {
+    safetyNote = 'Stage 5 disabled — using post-downside position as-is.';
+    const s5Preview = computeStage5Safety(inputs.scores, stage5Opts);
+    safetyMin = s5Preview.safetyMin;
+    safetyAverage = s5Preview.safetyAverage;
+    safetySkipped = true;
+    safetyHaircut = null;
+    finalPosition = afterDownside;
+  } else {
+    const s5 = computeStage5Safety(inputs.scores, stage5Opts);
+    safetyMin = s5.safetyMin;
+    safetyAverage = s5.safetyAverage;
+    safetySkipped = s5.skipped;
+    if (s5.skipped) {
+      safetyHaircut = null;
+      safetyNote = s5.note;
+      if (SAFETY_SCORE_TYPES.some(st => inputs.scores[st] == null)) {
+        warnings.push('Enter both safety scores to apply Stage 5 safety haircut.');
+      }
+      finalPosition = afterDownside;
+    } else {
+      safetyHaircut = s5.haircut;
+      safetyNote = s5.note;
+      finalPosition = afterDownside * (s5.haircut ?? 1);
     }
   }
 
@@ -399,6 +551,13 @@ export function calculatePositionSize(inputs: SizingInputs): SizingResult {
     afterProbability,
     downsideHaircut,
     downsideNote,
+    afterDownside,
+    safetyMin,
+    safetyAverage:
+      safetyAverage == null ? null : Math.round(safetyAverage * 100) / 100,
+    safetyHaircut,
+    safetyNote,
+    safetySkipped,
     finalPosition,
     warnings,
   };

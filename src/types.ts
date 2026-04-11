@@ -50,7 +50,8 @@ export interface GemRun {
   captured_metrics?: Record<string, number> | null;
 }
 
-export const SCORE_TYPES = [
+/** Business-quality weighted scores (higher is better). Used for quality average and Stage 1 sizing brackets. */
+export const QUALITY_SCORE_TYPES = [
   'compounder_checklist',
   'terminal_value',
   'financial',
@@ -60,6 +61,15 @@ export const SCORE_TYPES = [
   'competitive_advantage',
   'moat',
 ] as const;
+
+export type QualityScoreType = (typeof QUALITY_SCORE_TYPES)[number];
+
+/** Inverted risk lenses stored as safety (higher = safer). Excluded from quality average; Stage 5 gate. */
+export const SAFETY_SCORE_TYPES = ['pre_mortem_safety', 'gauntlet_safety'] as const;
+
+export type SafetyScoreType = (typeof SAFETY_SCORE_TYPES)[number];
+
+export const SCORE_TYPES = [...QUALITY_SCORE_TYPES, ...SAFETY_SCORE_TYPES] as const;
 
 export type ScoreType = (typeof SCORE_TYPES)[number];
 
@@ -72,6 +82,8 @@ export const SCORE_LABELS: Record<ScoreType, string> = {
   antifragile: 'AntiFragile',
   competitive_advantage: 'Competitive Advantage',
   moat: 'Lollapalooza Moat',
+  pre_mortem_safety: 'Pre-Mortem Safety',
+  gauntlet_safety: 'Gauntlet Safety',
 };
 
 /**
@@ -90,6 +102,10 @@ export const SCORE_COLUMN_HELP: Record<ScoreType, string> = {
   competitive_advantage:
     'Weighted score from the Competitive Advantage gem (latest run per company).',
   moat: 'Weighted score from the Lollapalooza Moat gem (latest run per company).',
+  pre_mortem_safety:
+    'Safety score from the pre-mortem risk gem (higher = safer; latest run per company).',
+  gauntlet_safety:
+    'Safety score from the gauntlet (multi-risk) gem (higher = safer; latest run per company).',
 };
 
 export type CompanyScores = {

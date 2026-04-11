@@ -1,6 +1,6 @@
-import { SCORE_TYPES, SCORE_LABELS } from '../types';
+import { QUALITY_SCORE_TYPES, SAFETY_SCORE_TYPES, SCORE_LABELS } from '../types';
 import type { ScoreType } from '../types';
-import { avgOfScores } from './columnMinFilters';
+import { avgOfScores, avgOfSafetyScores } from './columnMinFilters';
 
 export type MetricsLandscapeRow = {
   companyName: string;
@@ -44,7 +44,12 @@ export function buildMetricsLandscapeCSV(args: {
   }
   headers.push(...metricColumnHeaders);
   if (showWeightedScores) {
-    headers.push(...SCORE_TYPES.map(st => SCORE_LABELS[st]), 'Avg');
+    headers.push(
+      ...QUALITY_SCORE_TYPES.map(st => SCORE_LABELS[st]),
+      'Avg (quality)',
+      ...SAFETY_SCORE_TYPES.map(st => SCORE_LABELS[st]),
+      'Safety avg',
+    );
   }
 
   const lines: string[] = [headers.map(escapeCSV).join(',')];
@@ -67,12 +72,18 @@ export function buildMetricsLandscapeCSV(args: {
       cells.push(v == null ? '' : Number.isInteger(v) ? String(v) : v.toFixed(2));
     }
     if (showWeightedScores) {
-      for (const st of SCORE_TYPES) {
+      for (const st of QUALITY_SCORE_TYPES) {
         const v = r.scores[st];
         cells.push(v != null ? v.toFixed(2) : '');
       }
       const avg = avgOfScores(r.scores);
       cells.push(avg != null ? avg.toFixed(2) : '');
+      for (const st of SAFETY_SCORE_TYPES) {
+        const v = r.scores[st];
+        cells.push(v != null ? v.toFixed(2) : '');
+      }
+      const safetyAvg = avgOfSafetyScores(r.scores);
+      cells.push(safetyAvg != null ? safetyAvg.toFixed(2) : '');
     }
     lines.push(cells.map(escapeCSV).join(','));
   }
