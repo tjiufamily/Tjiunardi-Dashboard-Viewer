@@ -90,11 +90,33 @@ export const DEFAULT_SAFETY_MEAN_TIERS: SafetyMeanTierRule[] = [
   { minAvg: 5, multiplier: 0.4 },
 ];
 
+/** Stage 5: classic mean of both scores vs Gauntlet-driven tiers + Pre-Mortem cap rules. */
+export type Stage5Mode = 'legacy_mean' | 'split_gate_haircut';
+
+/**
+ * When pre-mortem &lt; `premortemBelow`, the final Stage 5 multiplier is capped at `capMultiplier`.
+ * If several rules apply, the tightest cap (minimum multiplier) wins.
+ */
+export type PremortemGateRule = { premortemBelow: number; capMultiplier: number };
+
+/**
+ * Default Pre-Mortem gates (rough Gauntlet alignment: PM ~3 → ~Gauntlet 6 tier; PM ~4 → ~Gauntlet 8).
+ * PM &lt; 3 → cap 0.65; PM &lt; 4 → cap 1 (no extra cap vs Gauntlet-only result).
+ */
+export const DEFAULT_PREMORTEM_GATE_RULES: PremortemGateRule[] = [
+  { premortemBelow: 3, capMultiplier: 0.65 },
+  { premortemBelow: 4, capMultiplier: 1 },
+];
+
 export type Stage5Options = {
-  /** If true, min(pre-mortem, gauntlet) &lt; hardMin → ×0. If false, only mean tiers apply. */
+  /** `legacy_mean`: mean of both drives tiers; `split_gate_haircut`: Gauntlet drives tiers, Pre-Mortem caps. */
+  mode: Stage5Mode;
+  /** Legacy: min(both) &lt; hardMin → ×0; split: gauntlet &lt; hardMin → ×0. */
   applyMinRule: boolean;
   hardMin: number;
   meanTiers: SafetyMeanTierRule[];
+  /** Split mode only; ignored in legacy. */
+  premortemGateRules: PremortemGateRule[];
 };
 
 export function safetyMeanHaircutFromTiers(safetyAvg: number, tiers: SafetyMeanTierRule[]): number {
@@ -106,6 +128,20 @@ export function safetyMeanHaircutFromTiers(safetyAvg: number, tiers: SafetyMeanT
     if (safetyAvg >= t.minAvg) return t.multiplier;
   }
   return 0;
+}
+
+/** Among rules where `premortem < premortemBelow`, return the minimum cap (tightest). Null if none apply. */
+export function premortemGateCapMultiplier(
+  premortem: number,
+  rules: PremortemGateRule[],
+): number | null {
+  const valid = rules.filter(
+    r => Number.isFinite(r.premortemBelow) && Number.isFinite(r.capMultiplier),
+  );
+  if (valid.length === 0) return null;
+  const caps = valid.filter(r => premortem < r.premortemBelow).map(r => r.capMultiplier);
+  if (caps.length === 0) return null;
+  return Math.min(...caps);
 }
 
 export type ProbabilityMultiplierOptions = {
@@ -231,6 +267,10 @@ export type SizingInputs = {
   safetyHardMin?: number;
   /** Stage 5: mean-based tiers (highest matching minAvg wins). */
   safetyMeanTiers?: SafetyMeanTierRule[];
+  /** Stage 5: legacy mean vs Gauntlet tiers + Pre-Mortem caps. Default `legacy_mean`. */
+  safetyStage5Mode?: Stage5Mode;
+  /** Split mode: rules for capping the multiplier when pre-mortem is weak. */
+  safetyPremortemGateRules?: PremortemGateRule[];
 };
 
 export type MetricResult = {
@@ -265,10 +305,17 @@ export type SizingResult = {
   downsideNote: string;
   /** Position % after Stage 4 (downside haircut), before Stage 5. */
   afterDownside: number;
-  /** Min of the two safety scores when both present. */
+  /**
+   * Value used for the optional hard-min gate: legacy = min(pre-mortem, gauntlet) when both present;
+   * split = gauntlet only.
+   */
   safetyMin: number | null;
-  /** Mean of pre-mortem + gauntlet safety when both present. */
+  /**
+   * Score driving mean/Gauntlet tiers: legacy = average of both when both present; split = gauntlet.
+   */
   safetyAverage: number | null;
+  /** Which Stage 5 rule set was applied. */
+  safetyStage5Mode: Stage5Mode;
   /** Multiplier applied after downside (1 = none). Null when Stage 5 skipped (incomplete scores). */
   safetyHaircut: number | null;
   safetyNote: string;
@@ -294,16 +341,21 @@ export type Stage5SafetyPreview = {
 
 function resolveStage5Options(partial?: Partial<Stage5Options>): Stage5Options {
   return {
+    mode: partial?.mode ?? 'legacy_mean',
     applyMinRule: partial?.applyMinRule ?? false,
     hardMin: partial?.hardMin ?? SAFETY_HARD_MIN,
     meanTiers:
       partial?.meanTiers != null && partial.meanTiers.length > 0
         ? partial.meanTiers
         : DEFAULT_SAFETY_MEAN_TIERS,
+    premortemGateRules:
+      partial?.premortemGateRules != null && partial.premortemGateRules.length > 0
+        ? partial.premortemGateRules
+        : DEFAULT_PREMORTEM_GATE_RULES,
   };
 }
 
-/** Stage 5: optional min-of-two gate, then mean-based tiers. */
+/** Stage 5: optional hard-min gate, then mean-based tiers (legacy) or Gauntlet tiers + Pre-Mortem caps (split). */
 export function computeStage5Safety(
   scores: Partial<Record<ScoreType, number>>,
   options?: Partial<Stage5Options>,
@@ -311,6 +363,57 @@ export function computeStage5Safety(
   const o = resolveStage5Options(options);
   const s1 = scores.pre_mortem_safety;
   const s2 = scores.gauntlet_safety;
+
+  if (o.mode === 'split_gate_haircut') {
+    if (s2 == null) {
+      return {
+        safetyMin: null,
+        safetyAverage: null,
+        haircut: null,
+        note: 'Gauntlet safety missing — Stage 5 skipped (×1).',
+        skipped: true,
+      };
+    }
+    const safetyMin = s2;
+    const safetyAverage = s2;
+    if (o.applyMinRule && s2 < o.hardMin) {
+      return {
+        safetyMin,
+        safetyAverage,
+        haircut: 0,
+        note: `Gauntlet ${s2.toFixed(2)} < ${o.hardMin} (min rule) → ×0`,
+        skipped: false,
+      };
+    }
+    let h = safetyMeanHaircutFromTiers(s2, o.meanTiers);
+    let note: string;
+    if (s1 == null) {
+      note = o.applyMinRule
+        ? `Gauntlet ${s2.toFixed(2)} ≥ ${o.hardMin}, tiers → ×${h} (Pre-Mortem missing — no PM cap)`
+        : `Gauntlet ${s2.toFixed(2)} → ×${h} (Pre-Mortem missing — no PM cap; min rule off)`;
+    } else {
+      const cap = premortemGateCapMultiplier(s1, o.premortemGateRules);
+      if (cap != null && h > cap) {
+        const prev = h;
+        h = Math.min(h, cap);
+        note = o.applyMinRule
+          ? `Gauntlet ${s2.toFixed(2)} ≥ ${o.hardMin}, tiers → ×${prev}, PM ${s1.toFixed(2)} cap → ×${h}`
+          : `Gauntlet ${s2.toFixed(2)} → ×${prev}, PM ${s1.toFixed(2)} cap → ×${h} (min rule off)`;
+      } else {
+        note = o.applyMinRule
+          ? `Gauntlet ${s2.toFixed(2)} ≥ ${o.hardMin}, tiers → ×${h} (PM ${s1.toFixed(2)} no tighter cap)`
+          : `Gauntlet ${s2.toFixed(2)} → ×${h} (PM ${s1.toFixed(2)}; min rule off)`;
+      }
+    }
+    return {
+      safetyMin,
+      safetyAverage,
+      haircut: h,
+      note,
+      skipped: false,
+    };
+  }
+
   if (s1 == null || s2 == null) {
     return {
       safetyMin: null,
@@ -487,10 +590,13 @@ export function calculatePositionSize(inputs: SizingInputs): SizingResult {
 
   afterDownside = Math.round(afterDownside * 100) / 100;
 
+  const safetyStage5Mode: Stage5Mode = inputs.safetyStage5Mode ?? 'legacy_mean';
   const stage5Opts: Partial<Stage5Options> = {
+    mode: safetyStage5Mode,
     applyMinRule: inputs.safetyApplyMinRule ?? false,
     hardMin: inputs.safetyHardMin ?? SAFETY_HARD_MIN,
     meanTiers: inputs.safetyMeanTiers,
+    premortemGateRules: inputs.safetyPremortemGateRules,
   };
 
   let safetyMin: number | null = null;
@@ -516,8 +622,13 @@ export function calculatePositionSize(inputs: SizingInputs): SizingResult {
     if (s5.skipped) {
       safetyHaircut = null;
       safetyNote = s5.note;
-      if (SAFETY_SCORE_TYPES.some(st => inputs.scores[st] == null)) {
+      const needBoth = safetyStage5Mode === 'legacy_mean' && SAFETY_SCORE_TYPES.some(st => inputs.scores[st] == null);
+      const needGauntlet =
+        safetyStage5Mode === 'split_gate_haircut' && inputs.scores.gauntlet_safety == null;
+      if (needBoth) {
         warnings.push('Enter both safety scores to apply Stage 5 safety haircut.');
+      } else if (needGauntlet) {
+        warnings.push('Enter Gauntlet safety score to apply Stage 5 safety haircut.');
       }
       finalPosition = afterDownside;
     } else {
@@ -558,6 +669,7 @@ export function calculatePositionSize(inputs: SizingInputs): SizingResult {
     safetyHaircut,
     safetyNote,
     safetySkipped,
+    safetyStage5Mode,
     finalPosition,
     warnings,
   };

@@ -65,6 +65,10 @@ export function loadQuoteCache(): Map<string, number> {
   return m;
 }
 
+export function loadQuoteCacheMeta(): Map<string, QuoteCacheEntry> {
+  return loadRaw();
+}
+
 export function isQuoteFresh(ticker: string, maxAgeMs: number, now = Date.now()): boolean {
   const raw = loadRaw();
   const e = raw.get(ticker.toUpperCase());

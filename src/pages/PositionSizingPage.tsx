@@ -21,6 +21,7 @@ import {
   DEFAULT_AVG_SUPERIOR_MAX_PCT,
   PROBABILITY_SCORE_TYPES,
   computeStagedTranchePlan,
+  DEFAULT_PREMORTEM_GATE_RULES,
   DEFAULT_SAFETY_MEAN_TIERS,
   SAFETY_HARD_MIN,
 } from '../lib/positionSizing';
@@ -30,7 +31,9 @@ import type {
   DownsideBracket,
   SizingResult,
   ProbabilityTierRule,
+  PremortemGateRule,
   SafetyMeanTierRule,
+  Stage5Mode,
 } from '../lib/positionSizing';
 import {
   findValueCompoundingAnalystGem,
@@ -89,6 +92,8 @@ type PositionSizingFavouriteSettings = {
   safetyApplyMinRule?: boolean;
   safetyHardMin?: number;
   safetyMeanTiers?: SafetyMeanTierRule[];
+  safetyStage5Mode?: Stage5Mode;
+  safetyPremortemGateRules?: PremortemGateRule[];
   stageToggles: {
     stage1: boolean;
     stage2: boolean;
@@ -152,6 +157,20 @@ function fmtPct(v: number | null | undefined, decimals = 2): string {
   return `${v.toFixed(decimals)}%`;
 }
 
+function fmtCachedQuoteTime(ts: number | null): string | null {
+  if (!ts || ts <= 0) return null;
+  const ageSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  const ageLabel =
+    ageSec < 60
+      ? `${ageSec}s ago`
+      : ageSec < 3600
+        ? `${Math.floor(ageSec / 60)}m ago`
+        : ageSec < 86400
+          ? `${Math.floor(ageSec / 3600)}h ago`
+          : `${Math.floor(ageSec / 86400)}d ago`;
+  return `${ageLabel} (${new Date(ts).toLocaleString()})`;
+}
+
 /** Value the "Implied" preset applies (implied CAGR, or fallback chain). */
 function effectiveImpliedCagr(opts: ReturnType<typeof valueCompoundingCagrOptionsFromRun>): number | null {
   if (opts.impliedTenYearCagrPercent != null) return opts.impliedTenYearCagrPercent;
@@ -195,12 +214,17 @@ export default function PositionSizingPage() {
     () => (quoteSymbol ? [{ ticker: quoteSymbol, name: selectedCompany?.companyName }] : []),
     [quoteSymbol, selectedCompany?.companyName],
   );
-  const { quotes, loading: quotesLoading, error: quotesError } = useStockQuotes(quoteInfos);
+  const { quotes, quoteUpdatedAt, loading: quotesLoading, error: quotesError } = useStockQuotes(quoteInfos);
 
   const delayedQuotePrice = useMemo(() => {
     if (!quoteSymbol) return null;
     return quotes.get(normalizeTickerSymbol(quoteSymbol)) ?? null;
   }, [quotes, quoteSymbol]);
+  const delayedQuoteUpdatedLabel = useMemo(() => {
+    if (!quoteSymbol) return null;
+    const ts = quoteUpdatedAt.get(normalizeTickerSymbol(quoteSymbol)) ?? null;
+    return fmtCachedQuoteTime(ts);
+  }, [quoteSymbol, quoteUpdatedAt]);
 
   const [priceOverrides, setPriceOverrides] = useState(loadPriceOverrides);
   useEffect(() => {
@@ -487,6 +511,10 @@ export default function PositionSizingPage() {
   const [safetyApplyMinRule, setSafetyApplyMinRule] = useState(false);
   const [safetyHardMin, setSafetyHardMin] = useState(SAFETY_HARD_MIN);
   const [safetyMeanTiers, setSafetyMeanTiers] = useState<SafetyMeanTierRule[]>(() => [...DEFAULT_SAFETY_MEAN_TIERS]);
+  const [safetyStage5Mode, setSafetyStage5Mode] = useState<Stage5Mode>('legacy_mean');
+  const [safetyPremortemGateRules, setSafetyPremortemGateRules] = useState<PremortemGateRule[]>(() => [
+    ...DEFAULT_PREMORTEM_GATE_RULES,
+  ]);
   const [stageToggles, setStageToggles] = useState({
     stage1: true,
     stage2: true,
@@ -566,11 +594,19 @@ export default function PositionSizingPage() {
           safetyApplyMinRule?: boolean;
           safetyHardMin?: number;
           safetyMeanTiers?: SafetyMeanTierRule[];
+          safetyStage5Mode?: string;
+          safetyPremortemGateRules?: PremortemGateRule[];
         };
         if (typeof o.safetyApplyMinRule === 'boolean') setSafetyApplyMinRule(o.safetyApplyMinRule);
         if (typeof o.safetyHardMin === 'number') setSafetyHardMin(o.safetyHardMin);
         if (Array.isArray(o.safetyMeanTiers) && o.safetyMeanTiers.length > 0) {
           setSafetyMeanTiers(o.safetyMeanTiers);
+        }
+        if (o.safetyStage5Mode === 'split_gate_haircut' || o.safetyStage5Mode === 'legacy_mean') {
+          setSafetyStage5Mode(o.safetyStage5Mode);
+        }
+        if (Array.isArray(o.safetyPremortemGateRules) && o.safetyPremortemGateRules.length > 0) {
+          setSafetyPremortemGateRules(o.safetyPremortemGateRules);
         }
       }
     } catch {
@@ -605,12 +641,14 @@ export default function PositionSizingPage() {
           safetyApplyMinRule,
           safetyHardMin,
           safetyMeanTiers,
+          safetyStage5Mode,
+          safetyPremortemGateRules,
         }),
       );
     } catch {
       /* ignore */
     }
-  }, [safetyApplyMinRule, safetyHardMin, safetyMeanTiers]);
+  }, [safetyApplyMinRule, safetyHardMin, safetyMeanTiers, safetyStage5Mode, safetyPremortemGateRules]);
 
   useEffect(() => {
     try {
@@ -677,12 +715,18 @@ export default function PositionSizingPage() {
     try {
       localStorage.setItem(
         LS_SIZING_SAFETY,
-        JSON.stringify({ safetyApplyMinRule, safetyHardMin, safetyMeanTiers }),
+        JSON.stringify({
+          safetyApplyMinRule,
+          safetyHardMin,
+          safetyMeanTiers,
+          safetyStage5Mode,
+          safetyPremortemGateRules,
+        }),
       );
     } catch {
       /* ignore */
     }
-  }, [safetyApplyMinRule, safetyHardMin, safetyMeanTiers]);
+  }, [safetyApplyMinRule, safetyHardMin, safetyMeanTiers, safetyStage5Mode, safetyPremortemGateRules]);
 
   useEffect(() => {
     try {
@@ -893,6 +937,8 @@ export default function PositionSizingPage() {
       safetyApplyMinRule,
       safetyHardMin,
       safetyMeanTiers,
+      safetyStage5Mode,
+      safetyPremortemGateRules,
       stageToggles,
     };
   }, [
@@ -916,6 +962,8 @@ export default function PositionSizingPage() {
     safetyApplyMinRule,
     safetyHardMin,
     safetyMeanTiers,
+    safetyStage5Mode,
+    safetyPremortemGateRules,
     stageToggles,
   ]);
 
@@ -967,6 +1015,14 @@ export default function PositionSizingPage() {
         fav.settings.safetyMeanTiers != null && fav.settings.safetyMeanTiers.length > 0
           ? fav.settings.safetyMeanTiers
           : [...DEFAULT_SAFETY_MEAN_TIERS],
+      );
+      setSafetyStage5Mode(
+        fav.settings.safetyStage5Mode === 'split_gate_haircut' ? 'split_gate_haircut' : 'legacy_mean',
+      );
+      setSafetyPremortemGateRules(
+        fav.settings.safetyPremortemGateRules != null && fav.settings.safetyPremortemGateRules.length > 0
+          ? fav.settings.safetyPremortemGateRules
+          : [...DEFAULT_PREMORTEM_GATE_RULES],
       );
       setStageToggles({
         stage1: fav.settings.stageToggles.stage1 ?? true,
@@ -1086,6 +1142,8 @@ export default function PositionSizingPage() {
       safetyApplyMinRule,
       safetyHardMin,
       safetyMeanTiers,
+      safetyStage5Mode,
+      safetyPremortemGateRules,
     });
   }, [
     selectedCompany,
@@ -1106,6 +1164,8 @@ export default function PositionSizingPage() {
     safetyApplyMinRule,
     safetyHardMin,
     safetyMeanTiers,
+    safetyStage5Mode,
+    safetyPremortemGateRules,
   ]);
 
   const stageFailure = useMemo(() => {
@@ -1224,8 +1284,9 @@ export default function PositionSizingPage() {
                     size as if risk were absent (and can signal “wait” at extreme downside).
                   </li>
                   <li>
-                    <strong>Safety (pre-mortem &amp; gauntlet)</strong> — Optional minimum-of-two gate and mean-based
-                    haircuts; configurable under Adjustable Rules.
+                    <strong>Safety (pre-mortem &amp; gauntlet)</strong> — Optional hard-min gate and tier haircuts:
+                    legacy uses the mean of both scores; split mode uses Gauntlet for tiers and Pre-Mortem only to cap the
+                    multiplier. Configurable under Adjustable Rules.
                   </li>
                 </ol>
                 <p className="sizing-process-tip-strength">
@@ -1344,6 +1405,9 @@ export default function PositionSizingPage() {
                         </button>
                       ) : null}
                     </div>
+                    {manualLastPrice == null && delayedQuoteUpdatedLabel ? (
+                      <div className="sizing-field-hint">Cached quote: {delayedQuoteUpdatedLabel}</div>
+                    ) : null}
                   </dd>
                 </div>
                 {vcaGem ? (
@@ -2091,17 +2155,47 @@ export default function PositionSizingPage() {
               </button>
             </div>
             <p className="rules-hint">
-              When both safety scores are present, Stage 5 applies after downside. Highest matching mean tier wins (same
-              idea as probability tiers).
+              Stage 5 runs after downside. Choose how the two safety scores combine: <strong>Legacy</strong> uses the mean
+              of both for tier haircuts (and optional min of two for ×0). <strong>Split</strong> uses Gauntlet alone for
+              tier haircuts; Pre-Mortem only applies multiplier caps when it is below the thresholds you set (sanity
+              check). Gauntlet is always required in split mode; Pre-Mortem is optional (no PM cap if missing).
             </p>
+            <div className="rules-hint" role="group" aria-label="Stage 5 combination mode">
+              <label className="rules-radio">
+                <input
+                  type="radio"
+                  name="safetyStage5Mode"
+                  checked={safetyStage5Mode === 'legacy_mean'}
+                  onChange={() => setSafetyStage5Mode('legacy_mean')}
+                />{' '}
+                <strong>Legacy</strong> — mean of both scores for tier haircuts; optional min(pre-mortem, gauntlet) for ×0
+              </label>
+              <label className="rules-radio">
+                <input
+                  type="radio"
+                  name="safetyStage5Mode"
+                  checked={safetyStage5Mode === 'split_gate_haircut'}
+                  onChange={() => setSafetyStage5Mode('split_gate_haircut')}
+                />{' '}
+                <strong>Split</strong> — Gauntlet tier haircuts; Pre-Mortem caps only (tiers below)
+              </label>
+            </div>
             <label className="rules-hint">
               <input
                 type="checkbox"
                 checked={safetyApplyMinRule}
                 onChange={e => setSafetyApplyMinRule(e.target.checked)}
               />{' '}
-              Apply <strong>minimum-of-two</strong> rule: if min(pre-mortem, gauntlet) &lt; threshold → ×0 (position
-              size zero)
+              {safetyStage5Mode === 'legacy_mean' ? (
+                <>
+                  Apply <strong>minimum-of-two</strong> rule: if min(pre-mortem, gauntlet) &lt; threshold → ×0 (position
+                  size zero)
+                </>
+              ) : (
+                <>
+                  Apply <strong>Gauntlet minimum</strong> rule: if gauntlet &lt; threshold → ×0 (position size zero)
+                </>
+              )}
             </label>
             <p className="rules-hint">
               Threshold (0–10):{' '}
@@ -2116,11 +2210,15 @@ export default function PositionSizingPage() {
                 disabled={!safetyApplyMinRule}
               />
             </p>
-            <h4 className="rules-subheading">Mean-based haircuts (safety avg)</h4>
+            <h4 className="rules-subheading">
+              {safetyStage5Mode === 'legacy_mean'
+                ? 'Mean-based haircuts (safety avg)'
+                : 'Gauntlet tier haircuts (same table as legacy; score = Gauntlet only)'}
+            </h4>
             <table className="rules-table">
               <thead>
                 <tr>
-                  <th>If safety avg ≥</th>
+                  <th>{safetyStage5Mode === 'legacy_mean' ? 'If safety avg ≥' : 'If Gauntlet ≥'}</th>
                   <th>Multiplier</th>
                   <th></th>
                 </tr>
@@ -2178,6 +2276,82 @@ export default function PositionSizingPage() {
             >
               + Add tier
             </button>
+            {safetyStage5Mode === 'split_gate_haircut' ? (
+              <>
+                <h4 className="rules-subheading">Pre-Mortem cap rules (split mode)</h4>
+                <p className="rules-hint">
+                  For each row, if pre-mortem is <strong>strictly below</strong> the threshold, the Stage 5 multiplier is
+                  capped at that value (if several rows apply, the tightest cap wins). Default rows map roughly PM &lt; 3 →
+                  Gauntlet ~6 tier, PM &lt; 4 → no extra cap vs full Gauntlet result.
+                </p>
+                <table className="rules-table">
+                  <thead>
+                    <tr>
+                      <th>If Pre-Mortem &lt;</th>
+                      <th>Cap multiplier at</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {safetyPremortemGateRules.map((b, i) => (
+                      <tr key={i}>
+                        <td>
+                          <input
+                            type="number"
+                            step="0.5"
+                            value={b.premortemBelow}
+                            onChange={e => {
+                              const next = [...safetyPremortemGateRules];
+                              next[i] = { ...next[i], premortemBelow: Number(e.target.value) };
+                              setSafetyPremortemGateRules(next);
+                            }}
+                            className="rules-input"
+                          />
+                        </td>
+                        <td>
+                          ×
+                          <input
+                            type="number"
+                            step="0.05"
+                            min={0}
+                            value={b.capMultiplier}
+                            onChange={e => {
+                              const next = [...safetyPremortemGateRules];
+                              next[i] = { ...next[i], capMultiplier: Number(e.target.value) };
+                              setSafetyPremortemGateRules(next);
+                            }}
+                            className="rules-input"
+                          />
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="btn-icon"
+                            onClick={() =>
+                              setSafetyPremortemGateRules(safetyPremortemGateRules.filter((_, j) => j !== i))
+                            }
+                          >
+                            ✕
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() =>
+                    setSafetyPremortemGateRules([
+                      ...safetyPremortemGateRules,
+                      { premortemBelow: 5, capMultiplier: 0.85 },
+                    ])
+                  }
+                >
+                  + Add PM cap rule
+                </button>
+              </>
+            ) : null}
           </div>
         </div>
       )}
@@ -2432,10 +2606,26 @@ export default function PositionSizingPage() {
               {stageFailure.stage5 ? <span className="sizing-stage-fail-tag">Failed: reduced to 0%</span> : null}
             </h4>
             <p className="stage-description">
-              Uses pre-mortem and gauntlet safety scores (higher = safer). Rules, minimum-of-two threshold, and mean tiers
-              are set under <strong>Adjustable Rules</strong> → Stage 5. If either score is missing, this stage is skipped
-              (×1).
+              {result.safetyStage5Mode === 'split_gate_haircut' ? (
+                <>
+                  <strong>Split mode:</strong> Gauntlet drives tier haircuts; Pre-Mortem only caps the multiplier when below
+                  your thresholds (see Adjustable Rules). Gauntlet is required. If Pre-Mortem is missing, Gauntlet tiers
+                  still apply without a PM cap.
+                </>
+              ) : (
+                <>
+                  Uses the mean of pre-mortem and gauntlet safety scores for tier haircuts (higher = safer). Optional
+                  minimum-of-two gate and tiers are under <strong>Adjustable Rules</strong> → Stage 5. If either score is
+                  missing, this stage is skipped (×1).
+                </>
+              )}
             </p>
+            <div className="stage-row">
+              <span className="stage-label">Stage 5 mode:</span>
+              <span className="stage-value">
+                {result.safetyStage5Mode === 'split_gate_haircut' ? 'Gauntlet tiers + Pre-Mortem caps' : 'Legacy (mean of both)'}
+              </span>
+            </div>
             <div className="stage-row">
               <span className="stage-label">Pre-Mortem Safety:</span>
               <span className="stage-value">

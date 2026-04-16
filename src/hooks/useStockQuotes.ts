@@ -6,14 +6,14 @@ import {
   sleep,
 } from '../lib/stockQuotes';
 import { fetchQuoteGemini } from '../lib/geminiQuoteFallback';
-import { loadQuoteCache, upsertQuoteCache, isQuoteFresh } from '../lib/quoteCache';
+import { isQuoteFresh, loadQuoteCache, loadQuoteCacheMeta, upsertQuoteCache } from '../lib/quoteCache';
 
 const FINNHUB_GAP_MS = 1100;
 const GEMINI_GAP_MS = 600;
 const GEMINI_EXTRA_GAP_MS = 500;
 const QUOTE_LAST_REFRESHED_KEY = 'tjiunardi.dashboard.quoteCache.lastRefreshedAt.v1';
-const QUOTE_FRESH_MS = 60 * 60 * 1000; // 60 minutes
-const AUTO_REFRESH_MS = 60 * 60 * 1000; // 60 minutes
+const QUOTE_FRESH_MS = 24 * 60 * 60 * 1000; // 24 hours (yesterday close is acceptable)
+const AUTO_REFRESH_MS = 24 * 60 * 60 * 1000; // 24 hours auto-refresh cadence
 
 export type QuoteFetchPhase = 'idle' | 'web' | 'gemini';
 export type QuoteFetchProgress = { phase: QuoteFetchPhase; current: number; total: number };
@@ -32,7 +32,7 @@ const inFlightQuoteFetch = new Map<string, Promise<number | null>>();
  * Persists successful prices to localStorage (survives browser restart)
  * and to session cache (survives tab switches without re-fetch).
  *
- * Only fetches missing/stale quotes (> 60 min).  Auto-refreshes at 60 min.
+ * Only fetches missing/stale quotes (> 24h). Auto-refreshes every 24h.
  * Manual refresh prioritises empty cells first, then stale ones.
  */
 export function useStockQuotes(infos: TickerInfo[]) {
@@ -93,6 +93,18 @@ export function useStockQuotes(infos: TickerInfo[]) {
       const cached = cache.get(t);
       const v = live != null && live > 0 ? live : session != null && session > 0 ? session : cached ?? null;
       m.set(t, v);
+    }
+    return m;
+  }, [key, liveQuotes]);
+
+  const quoteUpdatedAt = useMemo(() => {
+    if (!key) return new Map<string, number | null>();
+    const meta = loadQuoteCacheMeta();
+    const list = key.split('|');
+    const m = new Map<string, number | null>();
+    for (const t of list) {
+      const cached = meta.get(t);
+      m.set(t, cached && cached.updatedAt > 0 ? cached.updatedAt : null);
     }
     return m;
   }, [key, liveQuotes]);
@@ -300,5 +312,5 @@ export function useStockQuotes(infos: TickerInfo[]) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, refreshSeq]);
 
-  return { quotes, loading, error, fetchProgress, refresh, lastRefreshedAt };
+  return { quotes, quoteUpdatedAt, loading, error, fetchProgress, refresh, lastRefreshedAt };
 }

@@ -288,6 +288,7 @@ type Row = {
 
 type EnrichedRow = Row & {
   lastPrice: number | null;
+  cachedQuoteLabel: string | null;
   impliedCagr: number | null;
   bitsDownsideRisk: number | null;
   bitsToVcaTenYearCagr: number | null;
@@ -303,6 +304,20 @@ function fmtLastRefreshed(lastRefreshedAt: number, nowMs: number): string {
   else relative = `${Math.floor(ageSec / 86400)}d ago`;
   const absolute = new Date(lastRefreshedAt).toLocaleString();
   return `${relative} (${absolute})`;
+}
+
+function fmtCachedQuoteLabel(updatedAt: number | null, nowMs: number): string | null {
+  if (updatedAt == null || updatedAt <= 0) return null;
+  const ageSec = Math.max(0, Math.floor((nowMs - updatedAt) / 1000));
+  const relative =
+    ageSec < 60
+      ? `${ageSec}s ago`
+      : ageSec < 3600
+        ? `${Math.floor(ageSec / 60)}m ago`
+        : ageSec < 86400
+          ? `${Math.floor(ageSec / 3600)}h ago`
+          : `${Math.floor(ageSec / 86400)}d ago`;
+  return `${relative} (${new Date(updatedAt).toLocaleString()})`;
 }
 
 export default function MetricsComparePage() {
@@ -504,6 +519,11 @@ export default function MetricsComparePage() {
     },
     [metricColumns],
   );
+  const findTargetPeMetricFilterKeys = useCallback((): string[] => {
+    return metricColumns
+      .filter(col => isTargetPeMetric(col.label, col.key))
+      .map(col => `metric:${col.id}`);
+  }, [metricColumns]);
 
   /** Pre-fills header filters; users can still edit values and Min/Max toggles afterward. */
   const applyLowDownsideCompoundersPreset = useCallback(() => {
@@ -667,6 +687,123 @@ export default function MetricsComparePage() {
     setColumnBoundModes(modes);
   }, [findMetricFilterKeyByLabel]);
 
+  const applySafetyFirstCompoundersPreset = useCallback(() => {
+    setSearch('');
+    setColumnMins({
+      safetyAvg: '8.5',
+      'score:compounder_checklist': '8',
+      'extra:bitsDownsideRisk': '20',
+      'score:financial': '8',
+    });
+    setColumnBoundModes({
+      safetyAvg: 'min',
+      'score:compounder_checklist': 'min',
+      'extra:bitsDownsideRisk': 'max',
+      'score:financial': 'min',
+    });
+    setBuyPriceToneFilters({});
+  }, []);
+
+  const applyHighQualityAtFairPricePreset = useCallback(() => {
+    const targetPeKeys = findTargetPeMetricFilterKeys();
+    const mins: Record<string, string> = {
+      avg: '8',
+      'score:terminal_value': '8',
+      'extra:impliedCagr': '12',
+    };
+    const modes: Record<string, ColumnBoundMode> = {
+      avg: 'min',
+      'score:terminal_value': 'min',
+      'extra:impliedCagr': 'min',
+    };
+    for (const key of targetPeKeys) {
+      mins[key] = '24';
+      modes[key] = 'max';
+    }
+    setSearch('');
+    setColumnMins(mins);
+    setColumnBoundModes(modes);
+    setBuyPriceToneFilters({});
+  }, [findTargetPeMetricFilterKeys]);
+
+  const applyMoatBalanceSheetDoubleFilterPreset = useCallback(() => {
+    setSearch('');
+    setColumnMins({
+      'score:moat': '8',
+      'score:competitive_advantage': '8',
+      'score:financial': '8',
+      'score:wb_financial': '8',
+      'score:gauntlet_safety': '8',
+    });
+    setColumnBoundModes({
+      'score:moat': 'min',
+      'score:competitive_advantage': 'min',
+      'score:financial': 'min',
+      'score:wb_financial': 'min',
+      'score:gauntlet_safety': 'min',
+    });
+    setBuyPriceToneFilters({});
+  }, []);
+
+  const applyAsymmetricMispricingGreenTargetsPreset = useCallback(() => {
+    const greenFilters: Record<string, BuyPriceToneMode> = {};
+    for (const col of metricColumns) {
+      if (isBuyPriceVsLastPriceMetric(col.label, col.key)) {
+        greenFilters[`metric:${col.id}`] = 'green';
+      }
+    }
+    setSearch('');
+    setColumnMins({
+      avg: '8',
+      'extra:impliedCagr': '14',
+      'extra:bitsDownsideRisk': '25',
+    });
+    setColumnBoundModes({
+      avg: 'min',
+      'extra:impliedCagr': 'min',
+      'extra:bitsDownsideRisk': 'max',
+    });
+    setBuyPriceToneFilters(greenFilters);
+  }, [metricColumns]);
+
+  const applyConsensusGapUpsidePreset = useCallback(() => {
+    setSearch('');
+    setColumnMins({
+      'extra:bitsToVcaTenYearCagr': '12',
+      'extra:bitsDownsideRisk': '25',
+      'score:terminal_value': '8.5',
+      avg: '8',
+    });
+    setColumnBoundModes({
+      'extra:bitsToVcaTenYearCagr': 'min',
+      'extra:bitsDownsideRisk': 'max',
+      'score:terminal_value': 'min',
+      avg: 'min',
+    });
+    setBuyPriceToneFilters({});
+  }, []);
+
+  const applyUltraSelectiveCandidateListPreset = useCallback(() => {
+    setSearch('');
+    setColumnMins({
+      avg: '8.5',
+      safetyAvg: '5',
+      'score:compounder_checklist': '8.5',
+      'score:terminal_value': '5',
+      'extra:bitsDownsideRisk': '20',
+      'extra:impliedCagr': '12',
+    });
+    setColumnBoundModes({
+      avg: 'min',
+      safetyAvg: 'min',
+      'score:compounder_checklist': 'min',
+      'score:terminal_value': 'min',
+      'extra:bitsDownsideRisk': 'max',
+      'extra:impliedCagr': 'min',
+    });
+    setBuyPriceToneFilters({});
+  }, []);
+
   const metricExportHeaders = useMemo(
     () =>
       metricColumns.map(col =>
@@ -717,6 +854,7 @@ export default function MetricsComparePage() {
   );
   const {
     quotes,
+    quoteUpdatedAt,
     loading: quotesLoading,
     error: quotesError,
     fetchProgress,
@@ -829,6 +967,10 @@ export default function MetricsComparePage() {
       const fetched = quotes.get(normalizeTickerSymbol(r.quoteSymbol)) ?? null;
       const manual = priceOverrides[r.companyId];
       const lastPrice = manual ?? fetched;
+      const cachedQuoteLabel = fmtCachedQuoteLabel(
+        quoteUpdatedAt.get(normalizeTickerSymbol(r.quoteSymbol)) ?? null,
+        refreshClock,
+      );
       const vcaRun = latestVcaByCompany.get(r.companyId);
       const target =
         vcaTargetKey != null && vcaRun?.captured_metrics
@@ -857,9 +999,19 @@ export default function MetricsComparePage() {
         target > 0
           ? impliedCagrPercentFromPrices(bitsTarget, target)
           : null;
-      return { ...r, lastPrice, impliedCagr, bitsDownsideRisk, bitsToVcaTenYearCagr };
+      return { ...r, lastPrice, cachedQuoteLabel, impliedCagr, bitsDownsideRisk, bitsToVcaTenYearCagr };
     });
-  }, [rows, quotes, priceOverrides, vcaTargetKey, latestVcaByCompany, latestBitsByCompany, bitsTargetKey]);
+  }, [
+    rows,
+    quotes,
+    quoteUpdatedAt,
+    priceOverrides,
+    vcaTargetKey,
+    latestVcaByCompany,
+    latestBitsByCompany,
+    bitsTargetKey,
+    refreshClock,
+  ]);
 
   const displayedPriceCount = useMemo(
     () => enrichedRows.filter(r => r.lastPrice != null && r.lastPrice > 0).length,
@@ -1125,87 +1277,153 @@ export default function MetricsComparePage() {
         </div>
         <div className="metrics-filter-presets" role="group" aria-label="Filter presets">
           <span className="metrics-filter-presets-label">Presets</span>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={applyLowDownsideCompoundersPreset}
-            disabled={selectedGemIds.length === 0}
-            title="Tip: (prioritize downside protection). Downside risk (BITS) max 15%, Stock Compounder Checklist min 8.5 — adjust in column headers after applying"
-          >
-            Low downside compounders
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={applyHighGrowthCompoundersPreset}
-            disabled={selectedGemIds.length === 0}
-            title="Tip: (growth + compounding). Base case growth % min 15, 5Y value compounding % min 15 when those columns exist, Stock Compounder Checklist min 8"
-          >
-            High growth compounders
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={applyHighAverageConvictionPreset}
-            disabled={selectedGemIds.length === 0}
-            title="Tip: (broad high conviction). Avg score min 8, Downside risk (BITS) max 30%, Terminal Value – Alpha & Forensic min 8"
-          >
-            High average conviction
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={applyWideMoatFocusPreset}
-            disabled={selectedGemIds.length === 0}
-            title="Tip: (structural advantages). Competitive Advantage, Moat, Compounder Checklist, Stock Checklist — all min 8"
-          >
-            Wide moat focus
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={applyBalanceSheetAccountingQualityPreset}
-            disabled={selectedGemIds.length === 0}
-            title="Tip: (accounting & balance sheet quality). Financial min 8, WB Financial Analyst min 8, Downside risk (BITS) max 25%"
-          >
-            Balance-sheet / accounting quality
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={applyAsymmetricEntryPreset}
-            disabled={selectedGemIds.length === 0}
-            title="Tip: (quality + pessimistic price). Stock Compounder Checklist min 8, Implied 10Y CAGR % (VCA) max 12%, Downside risk (BITS) max 25% — good business, dull quote"
-          >
-            Asymmetric entry
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={applyAntifragileCompoundersPreset}
-            disabled={selectedGemIds.length === 0}
-            title="Tip: (resilience + compounding). AntiFragile min 8.5, Stock Compounder Checklist min 8.5, Downside risk (BITS) max 25%"
-          >
-            Anti-fragile compounders
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={applyForensicChecklistHighBarPreset}
-            disabled={selectedGemIds.length === 0}
-            title="Tip: (fewer, higher-conviction names). Terminal Value – Alpha & Forensic min 8.5, Stock Checklist min 8, Lollapalooza Moat min 8"
-          >
-            Forensic + checklist
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={applyQualityGrowthValuePreset}
-            disabled={selectedGemIds.length === 0}
-            title="Tip: (quality + growth + value). Terminal Value min 8.5, Stock Checklist & Compounder min 8, 5Y value compounding min 12 when present, Implied 10Y CAGR % (VCA) min 12%, Downside risk (BITS) max 25%"
-          >
-            Quality + Growth + Value
-          </button>
+
+          <div className="metrics-filter-presets-group metrics-filter-presets-group--core">
+            <span className="metrics-filter-presets-group-label">Core long-term</span>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm metrics-preset-btn"
+              onClick={applySafetyFirstCompoundersPreset}
+              disabled={selectedGemIds.length === 0}
+              title="Tip: (survivability first). Safety avg min 8.5, Stock Compounder Checklist min 8, Financial min 8, Downside Risk % (BITS) max 20%"
+            >
+              Safety-first compounders
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm metrics-preset-btn"
+              onClick={applyHighQualityAtFairPricePreset}
+              disabled={selectedGemIds.length === 0}
+              title="Tip: (Q@FP / GARP). Avg min 8, Terminal Value min 8, Implied 10Y CAGR % (VCA) min 12, and any target/terminal P/E columns max 24 when present"
+            >
+              High-quality at fair price
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm metrics-preset-btn"
+              onClick={applyMoatBalanceSheetDoubleFilterPreset}
+              disabled={selectedGemIds.length === 0}
+              title="Tip: (business durability + financial resilience). Moat, Competitive Advantage, Financial, WB Financial, and Gauntlet Safety all min 8"
+            >
+              Moat + balance-sheet double filter
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm metrics-preset-btn"
+              onClick={applyUltraSelectiveCandidateListPreset}
+              disabled={selectedGemIds.length === 0}
+              title="Tip: (ultra-selective candidates). Avg min 8.5, Safety avg min 8.5, Compounder Checklist min 8.5, Terminal Value min 5, Downside Risk % (BITS) max 20, Implied 10Y CAGR % (VCA) min 12"
+            >
+              Ultra-selective candidate list
+            </button>
+          </div>
+
+          <div className="metrics-filter-presets-group metrics-filter-presets-group--opportunity">
+            <span className="metrics-filter-presets-group-label">Opportunity / upside</span>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm metrics-preset-btn"
+              onClick={applyAsymmetricMispricingGreenTargetsPreset}
+              disabled={selectedGemIds.length === 0}
+              title="Tip: (green buy-target mispricing). Avg min 8, Implied 10Y CAGR % (VCA) min 14, Downside Risk % (BITS) max 25, and all buy-target columns set to green vs last price"
+            >
+              Asymmetric mispricing (green targets)
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm metrics-preset-btn"
+              onClick={applyConsensusGapUpsidePreset}
+              disabled={selectedGemIds.length === 0}
+              title="Tip: (BITS to VCA expansion). 10Y CAGR % (BITS->VCA) min 12, Downside Risk % (BITS) max 25, Terminal Value min 8.5, Avg min 8"
+            >
+              Consensus gap upside
+            </button>
+          </div>
+
+          <div className="metrics-filter-presets-group metrics-filter-presets-group--legacy">
+            <span className="metrics-filter-presets-group-label">Legacy presets</span>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm metrics-preset-btn"
+              onClick={applyLowDownsideCompoundersPreset}
+              disabled={selectedGemIds.length === 0}
+              title="Tip: (prioritize downside protection). Downside risk (BITS) max 15%, Stock Compounder Checklist min 8.5 — adjust in column headers after applying"
+            >
+              Low downside compounders
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm metrics-preset-btn"
+              onClick={applyHighGrowthCompoundersPreset}
+              disabled={selectedGemIds.length === 0}
+              title="Tip: (growth + compounding). Base case growth % min 15, 5Y value compounding % min 15 when those columns exist, Stock Compounder Checklist min 8"
+            >
+              High growth compounders
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm metrics-preset-btn"
+              onClick={applyHighAverageConvictionPreset}
+              disabled={selectedGemIds.length === 0}
+              title="Tip: (broad high conviction). Avg score min 8, Downside risk (BITS) max 30%, Terminal Value – Alpha & Forensic min 8"
+            >
+              High average conviction
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm metrics-preset-btn"
+              onClick={applyWideMoatFocusPreset}
+              disabled={selectedGemIds.length === 0}
+              title="Tip: (structural advantages). Competitive Advantage, Moat, Compounder Checklist, Stock Checklist — all min 8"
+            >
+              Wide moat focus
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm metrics-preset-btn"
+              onClick={applyBalanceSheetAccountingQualityPreset}
+              disabled={selectedGemIds.length === 0}
+              title="Tip: (accounting & balance sheet quality). Financial min 8, WB Financial Analyst min 8, Downside risk (BITS) max 25%"
+            >
+              Balance-sheet / accounting quality
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm metrics-preset-btn"
+              onClick={applyAsymmetricEntryPreset}
+              disabled={selectedGemIds.length === 0}
+              title="Tip: (quality + pessimistic price). Stock Compounder Checklist min 8, Implied 10Y CAGR % (VCA) max 12%, Downside risk (BITS) max 25% — good business, dull quote"
+            >
+              Asymmetric entry
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm metrics-preset-btn"
+              onClick={applyAntifragileCompoundersPreset}
+              disabled={selectedGemIds.length === 0}
+              title="Tip: (resilience + compounding). AntiFragile min 8.5, Stock Compounder Checklist min 8.5, Downside risk (BITS) max 25%"
+            >
+              Anti-fragile compounders
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm metrics-preset-btn"
+              onClick={applyForensicChecklistHighBarPreset}
+              disabled={selectedGemIds.length === 0}
+              title="Tip: (fewer, higher-conviction names). Terminal Value – Alpha & Forensic min 8.5, Stock Checklist min 8, Lollapalooza Moat min 8"
+            >
+              Forensic + checklist
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm metrics-preset-btn"
+              onClick={applyQualityGrowthValuePreset}
+              disabled={selectedGemIds.length === 0}
+              title="Tip: (quality + growth + value). Terminal Value min 8.5, Stock Checklist & Compounder min 8, 5Y value compounding min 12 when present, Implied 10Y CAGR % (VCA) min 12%, Downside risk (BITS) max 25%"
+            >
+              Quality + Growth + Value
+            </button>
+          </div>
         </div>
         <button
           type="button"
@@ -1598,6 +1816,9 @@ export default function MetricsComparePage() {
                             </button>
                           ) : null}
                         </div>
+                        {priceOverrides[r.companyId] == null && r.cachedQuoteLabel ? (
+                          <div className="metrics-price-cache-hint">Cached: {r.cachedQuoteLabel}</div>
+                        ) : null}
                       </td>
                       <td className={`metric-cell ${impliedCagrClass(r.impliedCagr)}`}>
                         {fmtImpliedCagrCell(

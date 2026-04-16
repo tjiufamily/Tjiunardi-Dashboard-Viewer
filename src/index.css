@@ -1480,10 +1480,9 @@ a.btn { text-decoration: none; color: inherit; }
 .metrics-filter-presets {
   width: 100%;
   flex-basis: 100%;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
   padding-top: 10px;
   margin-top: 2px;
   border-top: 1px solid var(--border);
@@ -1492,6 +1491,69 @@ a.btn { text-decoration: none; color: inherit; }
   font-size: 0.78rem;
   font-weight: 600;
   color: var(--text-secondary);
+}
+.metrics-filter-presets-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--bg-elevated) 55%, transparent);
+}
+.metrics-filter-presets-group--core {
+  border-color: color-mix(in srgb, #3b82f6 30%, var(--border));
+  background: color-mix(in srgb, #3b82f6 10%, var(--bg-elevated));
+}
+.metrics-filter-presets-group--opportunity {
+  border-color: color-mix(in srgb, #8b5cf6 35%, var(--border));
+  background: color-mix(in srgb, #8b5cf6 11%, var(--bg-elevated));
+}
+.metrics-filter-presets-group--legacy {
+  border-color: color-mix(in srgb, var(--border) 78%, transparent);
+  background: color-mix(in srgb, var(--bg-elevated) 45%, transparent);
+}
+.metrics-filter-presets-group-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-right: 2px;
+}
+.metrics-preset-btn {
+  padding: 6px 11px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-surface) 84%, var(--accent) 16%);
+  color: var(--text-primary);
+  font-weight: 600;
+  line-height: 1.1;
+}
+.metrics-preset-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 24%, var(--bg-surface));
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  transform: translateY(-1px);
+}
+.metrics-preset-btn:disabled {
+  border-color: color-mix(in srgb, var(--border) 75%, transparent);
+}
+.metrics-filter-presets-group--core .metrics-preset-btn {
+  border-color: color-mix(in srgb, #3b82f6 45%, var(--border));
+  background: color-mix(in srgb, #3b82f6 16%, var(--bg-surface));
+}
+.metrics-filter-presets-group--core .metrics-preset-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, #3b82f6 26%, var(--bg-surface));
+  border-color: color-mix(in srgb, #3b82f6 62%, var(--border));
+}
+.metrics-filter-presets-group--opportunity .metrics-preset-btn {
+  border-color: color-mix(in srgb, #8b5cf6 50%, var(--border));
+  background: color-mix(in srgb, #8b5cf6 17%, var(--bg-surface));
+}
+.metrics-filter-presets-group--opportunity .metrics-preset-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, #8b5cf6 28%, var(--bg-surface));
+  border-color: color-mix(in srgb, #8b5cf6 65%, var(--border));
 }
 .metrics-gem-label { font-size: 0.85rem; font-weight: 600; color: var(--text-secondary); }
 .metrics-gem-picker {
@@ -1614,6 +1676,12 @@ a.btn { text-decoration: none; color: inherit; }
 .metrics-price-revert:hover {
   color: var(--warning);
   background: rgba(245, 158, 11, 0.15);
+}
+.metrics-price-cache-hint {
+  margin-top: 4px;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  line-height: 1.2;
 }
 .metrics-no-keys-hint {
   font-size: 0.85rem; color: var(--text-muted); margin: 0;
@@ -2383,6 +2451,7 @@ a.btn { text-decoration: none; color: inherit; }
 .rules-subheading { margin: 12px 0 8px; font-size: 0.85rem; font-weight: 600; color: var(--text-secondary); }
 .rules-haircut-hint { font-size: 0.7rem; color: var(--text-muted); margin-left: 6px; white-space: nowrap; }
 .rules-hint { font-size: 0.8rem; color: var(--text-muted); margin: 0 0 8px; }
+.rules-radio { display: block; margin-bottom: 8px; cursor: pointer; }
 .rules-table { border-collapse: collapse; font-size: 0.82rem; width: 100%; }
 .rules-table th,
 .rules-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; }
