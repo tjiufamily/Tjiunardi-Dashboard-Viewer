@@ -56,6 +56,136 @@ const DEFAULT_METRICS_GEM_NAME = 'Value Compounding Analyst V3.3';
 const GEM_PARAM = 'gem';
 const METRIC_COL_ID_SEP = '::';
 const LS_METRICS_SELECTED_GEMS = 'tjiunardi.dashboard.metrics.selectedGems.v1';
+const LS_METRICS_CUSTOM_PRESETS = 'tjiunardi.dashboard.metrics.customPresets.v1';
+const LS_METRICS_PRESET_OVERRIDES = 'tjiunardi.dashboard.metrics.presetOverrides.v1';
+const LS_METRICS_PRESETS_COLLAPSED = 'tjiunardi.dashboard.metrics.presetsCollapsed.v1';
+
+type PresetSnapshot = {
+  columnMins: Record<string, string>;
+  columnBoundModes: Record<string, ColumnBoundMode>;
+  buyPriceToneFilters: Record<string, BuyPriceToneMode>;
+};
+
+type CustomPreset = {
+  id: string;
+  label: string;
+  title?: string;
+  snapshot: PresetSnapshot;
+};
+
+type PresetImportPayload = {
+  version: 1;
+  exportedAt: string;
+  customPresets: CustomPreset[];
+  presetOverrides: Record<string, PresetSnapshot>;
+};
+
+const BUILTIN_PRESET_LABELS: Record<string, string> = {
+  'builtin:safety_first_compounders': 'Safety-first compounders',
+  'builtin:high_quality_at_fair_price': 'High-quality at fair price',
+  'builtin:moat_balance_sheet_double_filter': 'Moat + balance-sheet double filter',
+  'builtin:ultra_selective_candidate_list': 'Ultra-selective candidate list',
+  'builtin:asymmetric_mispricing_green_targets': 'Asymmetric mispricing (green targets)',
+  'builtin:consensus_gap_upside': 'Consensus gap upside',
+  'builtin:low_downside_compounders': 'Low downside compounders',
+  'builtin:high_growth_compounders': 'High growth compounders',
+  'builtin:high_average_conviction': 'High average conviction',
+  'builtin:wide_moat_focus': 'Wide moat focus',
+  'builtin:balance_sheet_accounting_quality': 'Balance-sheet / accounting quality',
+  'builtin:asymmetric_entry': 'Asymmetric entry',
+  'builtin:antifragile_compounders': 'Anti-fragile compounders',
+  'builtin:forensic_checklist_high_bar': 'Forensic + checklist',
+  'builtin:quality_growth_value': 'Quality + Growth + Value',
+};
+
+function normalizePresetSnapshot(snapshot: unknown): PresetSnapshot | null {
+  if (!snapshot || typeof snapshot !== 'object') return null;
+  const s = snapshot as {
+    columnMins?: unknown;
+    columnBoundModes?: unknown;
+    buyPriceToneFilters?: unknown;
+  };
+  if (!s.columnMins || typeof s.columnMins !== 'object') return null;
+  if (!s.columnBoundModes || typeof s.columnBoundModes !== 'object') return null;
+  const columnMins: Record<string, string> = {};
+  const columnBoundModes: Record<string, ColumnBoundMode> = {};
+  const buyPriceToneFilters: Record<string, BuyPriceToneMode> = {};
+  for (const [k, v] of Object.entries(s.columnMins)) {
+    if (typeof k === 'string' && typeof v === 'string') columnMins[k] = v;
+  }
+  for (const [k, v] of Object.entries(s.columnBoundModes)) {
+    if (typeof k !== 'string') continue;
+    if (v === 'min' || v === 'max') columnBoundModes[k] = v;
+  }
+  const rawTone = s.buyPriceToneFilters;
+  if (rawTone && typeof rawTone === 'object') {
+    for (const [k, v] of Object.entries(rawTone)) {
+      if (typeof k !== 'string') continue;
+      if (v === 'all' || v === 'green' || v === 'white') buyPriceToneFilters[k] = v;
+    }
+  }
+  return { columnMins, columnBoundModes, buyPriceToneFilters };
+}
+
+function normalizeCustomPreset(value: unknown): CustomPreset | null {
+  if (!value || typeof value !== 'object') return null;
+  const v = value as { id?: unknown; label?: unknown; title?: unknown; snapshot?: unknown };
+  if (typeof v.id !== 'string' || v.id.trim().length === 0) return null;
+  if (typeof v.label !== 'string' || v.label.trim().length === 0) return null;
+  const snapshot = normalizePresetSnapshot(v.snapshot);
+  if (!snapshot) return null;
+  return {
+    id: v.id.trim(),
+    label: v.label.trim(),
+    title: typeof v.title === 'string' ? v.title : undefined,
+    snapshot,
+  };
+}
+
+function loadCustomPresets(): CustomPreset[] {
+  try {
+    const raw = localStorage.getItem(LS_METRICS_CUSTOM_PRESETS);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map(normalizeCustomPreset).filter((v): v is CustomPreset => Boolean(v));
+  } catch {
+    return [];
+  }
+}
+
+function persistCustomPresets(presets: CustomPreset[]): void {
+  try {
+    localStorage.setItem(LS_METRICS_CUSTOM_PRESETS, JSON.stringify(presets));
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadPresetOverrides(): Record<string, PresetSnapshot> {
+  try {
+    const raw = localStorage.getItem(LS_METRICS_PRESET_OVERRIDES);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') return {};
+    const out: Record<string, PresetSnapshot> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      const snapshot = normalizePresetSnapshot(v);
+      if (typeof k === 'string' && snapshot) out[k] = snapshot;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function persistPresetOverrides(overrides: Record<string, PresetSnapshot>): void {
+  try {
+    localStorage.setItem(LS_METRICS_PRESET_OVERRIDES, JSON.stringify(overrides));
+  } catch {
+    /* ignore */
+  }
+}
 
 function loadPersistedMetricsGemIds(): string[] {
   try {
@@ -66,6 +196,16 @@ function loadPersistedMetricsGemIds(): string[] {
     return parsed.filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
   } catch {
     return [];
+  }
+}
+
+function loadPersistedPresetsCollapsed(): boolean {
+  try {
+    const raw = localStorage.getItem(LS_METRICS_PRESETS_COLLAPSED);
+    if (!raw) return false;
+    return raw === '1';
+  } catch {
+    return false;
   }
 }
 
@@ -341,9 +481,17 @@ export default function MetricsComparePage() {
   const [columnMins, setColumnMins] = useState<Record<string, string>>({});
   const [columnBoundModes, setColumnBoundModes] = useState<Record<string, ColumnBoundMode>>({});
   const [buyPriceToneFilters, setBuyPriceToneFilters] = useState<Record<string, BuyPriceToneMode>>({});
+  const [customPresets, setCustomPresets] = useState<CustomPreset[]>(loadCustomPresets);
+  const [presetOverrides, setPresetOverrides] = useState<Record<string, PresetSnapshot>>(loadPresetOverrides);
+  const [activePresetId, setActivePresetId] = useState<string | null>(null);
+  const [presetNotice, setPresetNotice] = useState<string | null>(null);
+  const [newPresetName, setNewPresetName] = useState('');
+  const [importMode, setImportMode] = useState<'replace' | 'merge'>('merge');
+  const [presetsCollapsed, setPresetsCollapsed] = useState(loadPersistedPresetsCollapsed);
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [priceOverrides, setPriceOverrides] = useState<Record<string, number>>(loadPriceOverrides);
+  const importPresetsInputRef = useRef<HTMLInputElement | null>(null);
 
   const defaultMetricsGemAppliedRef = useRef(false);
 
@@ -376,6 +524,30 @@ export default function MetricsComparePage() {
     setColumnBoundModes({});
     setBuyPriceToneFilters({});
   };
+
+  const currentPresetSnapshot = useCallback(
+    (): PresetSnapshot => ({
+      columnMins: { ...columnMins },
+      columnBoundModes: { ...columnBoundModes },
+      buyPriceToneFilters: { ...buyPriceToneFilters },
+    }),
+    [columnMins, columnBoundModes, buyPriceToneFilters],
+  );
+
+  const applyPresetSnapshot = useCallback((snapshot: PresetSnapshot) => {
+    setSearch('');
+    setColumnMins(snapshot.columnMins);
+    setColumnBoundModes(snapshot.columnBoundModes);
+    setBuyPriceToneFilters(snapshot.buyPriceToneFilters);
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_METRICS_PRESETS_COLLAPSED, presetsCollapsed ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  }, [presetsCollapsed]);
 
   useEffect(() => {
     if (!gems.length) return;
@@ -803,6 +975,170 @@ export default function MetricsComparePage() {
     });
     setBuyPriceToneFilters({});
   }, []);
+
+  const applyBuiltinPreset = useCallback(
+    (presetId: string, applyDefault: () => void) => {
+      setActivePresetId(presetId);
+      const override = presetOverrides[presetId];
+      if (override) {
+        applyPresetSnapshot(override);
+        return;
+      }
+      applyDefault();
+    },
+    [presetOverrides, applyPresetSnapshot],
+  );
+
+  const applyCustomPreset = useCallback(
+    (preset: CustomPreset) => {
+      setActivePresetId(preset.id);
+      applyPresetSnapshot(preset.snapshot);
+    },
+    [applyPresetSnapshot],
+  );
+
+  const saveNewCustomPreset = useCallback(() => {
+    const label = newPresetName.trim();
+    if (!label) {
+      setPresetNotice('Enter a preset name, then click Save current as preset.');
+      return;
+    }
+    const now = Date.now();
+    const idBase = label
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 48);
+    const id = `custom:${idBase || 'preset'}:${now}`;
+    const next: CustomPreset[] = [
+      ...customPresets,
+      {
+        id,
+        label,
+        snapshot: currentPresetSnapshot(),
+      },
+    ];
+    setCustomPresets(next);
+    persistCustomPresets(next);
+    setActivePresetId(id);
+    setNewPresetName('');
+    setPresetNotice(`Saved preset "${label}".`);
+  }, [customPresets, currentPresetSnapshot, newPresetName]);
+
+  const updateActivePreset = useCallback(() => {
+    if (!activePresetId) return;
+    const snapshot = currentPresetSnapshot();
+    const customIndex = customPresets.findIndex(p => p.id === activePresetId);
+    if (customIndex >= 0) {
+      const next = [...customPresets];
+      next[customIndex] = { ...next[customIndex], snapshot };
+      setCustomPresets(next);
+      persistCustomPresets(next);
+      setPresetNotice(`Updated preset "${next[customIndex].label}".`);
+      return;
+    }
+    const nextOverrides = { ...presetOverrides, [activePresetId]: snapshot };
+    setPresetOverrides(nextOverrides);
+    persistPresetOverrides(nextOverrides);
+    setPresetNotice('Updated active built-in preset defaults.');
+  }, [activePresetId, currentPresetSnapshot, customPresets, presetOverrides]);
+
+  const deleteActiveCustomPreset = useCallback(() => {
+    if (!activePresetId) return;
+    const target = customPresets.find(p => p.id === activePresetId);
+    if (!target) return;
+    const ok = window.confirm(`Delete custom preset "${target.label}"?`);
+    if (!ok) return;
+    const next = customPresets.filter(p => p.id !== activePresetId);
+    setCustomPresets(next);
+    persistCustomPresets(next);
+    setActivePresetId(null);
+    setPresetNotice(`Deleted preset "${target.label}".`);
+  }, [activePresetId, customPresets]);
+
+  const exportPresetPack = useCallback(() => {
+    const payload: PresetImportPayload = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      customPresets,
+      presetOverrides,
+    };
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadTextFile(
+      `metrics-presets-${stamp}.json`,
+      JSON.stringify(payload, null, 2),
+      'application/json;charset=utf-8',
+    );
+    setPresetNotice('Exported preset pack JSON.');
+  }, [customPresets, presetOverrides]);
+
+  const handleImportPresetPackClick = useCallback(() => {
+    importPresetsInputRef.current?.click();
+  }, []);
+
+  const handleImportPresetPackFile = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      event.target.value = '';
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text) as unknown;
+        if (!parsed || typeof parsed !== 'object') throw new Error('Invalid JSON');
+        const payload = parsed as Partial<PresetImportPayload> & {
+          customPresets?: unknown;
+          presetOverrides?: unknown;
+        };
+        const importedCustom = Array.isArray(payload.customPresets)
+          ? payload.customPresets.map(normalizeCustomPreset).filter((v): v is CustomPreset => Boolean(v))
+          : [];
+        const importedOverrides: Record<string, PresetSnapshot> = {};
+        if (payload.presetOverrides && typeof payload.presetOverrides === 'object') {
+          for (const [k, v] of Object.entries(payload.presetOverrides as Record<string, unknown>)) {
+            const snapshot = normalizePresetSnapshot(v);
+            if (typeof k === 'string' && snapshot) importedOverrides[k] = snapshot;
+          }
+        }
+        const nextCustom =
+          importMode === 'replace'
+            ? importedCustom
+            : (() => {
+                const byId = new Map(customPresets.map(p => [p.id, p]));
+                for (const p of importedCustom) byId.set(p.id, p);
+                return Array.from(byId.values());
+              })();
+        const nextOverrides =
+          importMode === 'replace' ? importedOverrides : { ...presetOverrides, ...importedOverrides };
+        setCustomPresets(nextCustom);
+        persistCustomPresets(nextCustom);
+        setPresetOverrides(nextOverrides);
+        persistPresetOverrides(nextOverrides);
+        setActivePresetId(null);
+        setPresetNotice(
+          `${importMode === 'replace' ? 'Replaced with' : 'Merged'} ${importedCustom.length} imported custom preset(s) and ${Object.keys(importedOverrides).length} built-in override(s).`,
+        );
+      } catch {
+        setPresetNotice('Preset import failed. Please select a valid preset JSON file.');
+      }
+    },
+    [importMode, customPresets, presetOverrides],
+  );
+
+  const activeCustomPreset = useMemo(
+    () => (activePresetId ? customPresets.find(p => p.id === activePresetId) ?? null : null),
+    [activePresetId, customPresets],
+  );
+  const activePresetLabel = useMemo(() => {
+    if (!activePresetId) return 'None';
+    const custom = customPresets.find(p => p.id === activePresetId);
+    if (custom) return `${custom.label} (custom)`;
+    return BUILTIN_PRESET_LABELS[activePresetId] ?? activePresetId;
+  }, [activePresetId, customPresets]);
+  const presetButtonClass = useCallback(
+    (presetId: string) =>
+      `btn btn-ghost btn-sm metrics-preset-btn${activePresetId === presetId ? ' metrics-preset-btn--active' : ''}`,
+    [activePresetId],
+  );
 
   const metricExportHeaders = useMemo(
     () =>
@@ -1276,14 +1612,27 @@ export default function MetricsComparePage() {
           </label>
         </div>
         <div className="metrics-filter-presets" role="group" aria-label="Filter presets">
-          <span className="metrics-filter-presets-label">Presets</span>
+          <button
+            type="button"
+            className="metrics-filter-presets-toggle btn btn-ghost btn-sm"
+            onClick={() => setPresetsCollapsed(v => !v)}
+            aria-expanded={!presetsCollapsed}
+            aria-label={presetsCollapsed ? 'Expand preset section' : 'Collapse preset section'}
+          >
+            <span className="metrics-filter-presets-label">Presets</span>
+            <span className="metrics-filter-presets-toggle-meta">
+              {presetsCollapsed ? 'Show presets ▾' : 'Hide presets ▴'}
+            </span>
+          </button>
 
+          {!presetsCollapsed ? (
+            <>
           <div className="metrics-filter-presets-group metrics-filter-presets-group--core">
             <span className="metrics-filter-presets-group-label">Core long-term</span>
             <button
               type="button"
-              className="btn btn-ghost btn-sm metrics-preset-btn"
-              onClick={applySafetyFirstCompoundersPreset}
+              className={presetButtonClass('builtin:safety_first_compounders')}
+              onClick={() => applyBuiltinPreset('builtin:safety_first_compounders', applySafetyFirstCompoundersPreset)}
               disabled={selectedGemIds.length === 0}
               title="Tip: (survivability first). Safety avg min 8.5, Stock Compounder Checklist min 8, Financial min 8, Downside Risk % (BITS) max 20%"
             >
@@ -1291,8 +1640,8 @@ export default function MetricsComparePage() {
             </button>
             <button
               type="button"
-              className="btn btn-ghost btn-sm metrics-preset-btn"
-              onClick={applyHighQualityAtFairPricePreset}
+              className={presetButtonClass('builtin:high_quality_at_fair_price')}
+              onClick={() => applyBuiltinPreset('builtin:high_quality_at_fair_price', applyHighQualityAtFairPricePreset)}
               disabled={selectedGemIds.length === 0}
               title="Tip: (Q@FP / GARP). Avg min 8, Terminal Value min 8, Implied 10Y CAGR % (VCA) min 12, and any target/terminal P/E columns max 24 when present"
             >
@@ -1300,8 +1649,10 @@ export default function MetricsComparePage() {
             </button>
             <button
               type="button"
-              className="btn btn-ghost btn-sm metrics-preset-btn"
-              onClick={applyMoatBalanceSheetDoubleFilterPreset}
+              className={presetButtonClass('builtin:moat_balance_sheet_double_filter')}
+              onClick={() =>
+                applyBuiltinPreset('builtin:moat_balance_sheet_double_filter', applyMoatBalanceSheetDoubleFilterPreset)
+              }
               disabled={selectedGemIds.length === 0}
               title="Tip: (business durability + financial resilience). Moat, Competitive Advantage, Financial, WB Financial, and Gauntlet Safety all min 8"
             >
@@ -1309,8 +1660,10 @@ export default function MetricsComparePage() {
             </button>
             <button
               type="button"
-              className="btn btn-ghost btn-sm metrics-preset-btn"
-              onClick={applyUltraSelectiveCandidateListPreset}
+              className={presetButtonClass('builtin:ultra_selective_candidate_list')}
+              onClick={() =>
+                applyBuiltinPreset('builtin:ultra_selective_candidate_list', applyUltraSelectiveCandidateListPreset)
+              }
               disabled={selectedGemIds.length === 0}
               title="Tip: (ultra-selective candidates). Avg min 8.5, Safety avg min 8.5, Compounder Checklist min 8.5, Terminal Value min 5, Downside Risk % (BITS) max 20, Implied 10Y CAGR % (VCA) min 12"
             >
@@ -1322,8 +1675,13 @@ export default function MetricsComparePage() {
             <span className="metrics-filter-presets-group-label">Opportunity / upside</span>
             <button
               type="button"
-              className="btn btn-ghost btn-sm metrics-preset-btn"
-              onClick={applyAsymmetricMispricingGreenTargetsPreset}
+              className={presetButtonClass('builtin:asymmetric_mispricing_green_targets')}
+              onClick={() =>
+                applyBuiltinPreset(
+                  'builtin:asymmetric_mispricing_green_targets',
+                  applyAsymmetricMispricingGreenTargetsPreset,
+                )
+              }
               disabled={selectedGemIds.length === 0}
               title="Tip: (green buy-target mispricing). Avg min 8, Implied 10Y CAGR % (VCA) min 14, Downside Risk % (BITS) max 25, and all buy-target columns set to green vs last price"
             >
@@ -1331,8 +1689,8 @@ export default function MetricsComparePage() {
             </button>
             <button
               type="button"
-              className="btn btn-ghost btn-sm metrics-preset-btn"
-              onClick={applyConsensusGapUpsidePreset}
+              className={presetButtonClass('builtin:consensus_gap_upside')}
+              onClick={() => applyBuiltinPreset('builtin:consensus_gap_upside', applyConsensusGapUpsidePreset)}
               disabled={selectedGemIds.length === 0}
               title="Tip: (BITS to VCA expansion). 10Y CAGR % (BITS->VCA) min 12, Downside Risk % (BITS) max 25, Terminal Value min 8.5, Avg min 8"
             >
@@ -1344,8 +1702,8 @@ export default function MetricsComparePage() {
             <span className="metrics-filter-presets-group-label">Legacy presets</span>
             <button
               type="button"
-              className="btn btn-ghost btn-sm metrics-preset-btn"
-              onClick={applyLowDownsideCompoundersPreset}
+              className={presetButtonClass('builtin:low_downside_compounders')}
+              onClick={() => applyBuiltinPreset('builtin:low_downside_compounders', applyLowDownsideCompoundersPreset)}
               disabled={selectedGemIds.length === 0}
               title="Tip: (prioritize downside protection). Downside risk (BITS) max 15%, Stock Compounder Checklist min 8.5 — adjust in column headers after applying"
             >
@@ -1353,8 +1711,8 @@ export default function MetricsComparePage() {
             </button>
             <button
               type="button"
-              className="btn btn-ghost btn-sm metrics-preset-btn"
-              onClick={applyHighGrowthCompoundersPreset}
+              className={presetButtonClass('builtin:high_growth_compounders')}
+              onClick={() => applyBuiltinPreset('builtin:high_growth_compounders', applyHighGrowthCompoundersPreset)}
               disabled={selectedGemIds.length === 0}
               title="Tip: (growth + compounding). Base case growth % min 15, 5Y value compounding % min 15 when those columns exist, Stock Compounder Checklist min 8"
             >
@@ -1362,8 +1720,8 @@ export default function MetricsComparePage() {
             </button>
             <button
               type="button"
-              className="btn btn-ghost btn-sm metrics-preset-btn"
-              onClick={applyHighAverageConvictionPreset}
+              className={presetButtonClass('builtin:high_average_conviction')}
+              onClick={() => applyBuiltinPreset('builtin:high_average_conviction', applyHighAverageConvictionPreset)}
               disabled={selectedGemIds.length === 0}
               title="Tip: (broad high conviction). Avg score min 8, Downside risk (BITS) max 30%, Terminal Value – Alpha & Forensic min 8"
             >
@@ -1371,8 +1729,8 @@ export default function MetricsComparePage() {
             </button>
             <button
               type="button"
-              className="btn btn-ghost btn-sm metrics-preset-btn"
-              onClick={applyWideMoatFocusPreset}
+              className={presetButtonClass('builtin:wide_moat_focus')}
+              onClick={() => applyBuiltinPreset('builtin:wide_moat_focus', applyWideMoatFocusPreset)}
               disabled={selectedGemIds.length === 0}
               title="Tip: (structural advantages). Competitive Advantage, Moat, Compounder Checklist, Stock Checklist — all min 8"
             >
@@ -1380,8 +1738,13 @@ export default function MetricsComparePage() {
             </button>
             <button
               type="button"
-              className="btn btn-ghost btn-sm metrics-preset-btn"
-              onClick={applyBalanceSheetAccountingQualityPreset}
+              className={presetButtonClass('builtin:balance_sheet_accounting_quality')}
+              onClick={() =>
+                applyBuiltinPreset(
+                  'builtin:balance_sheet_accounting_quality',
+                  applyBalanceSheetAccountingQualityPreset,
+                )
+              }
               disabled={selectedGemIds.length === 0}
               title="Tip: (accounting & balance sheet quality). Financial min 8, WB Financial Analyst min 8, Downside risk (BITS) max 25%"
             >
@@ -1389,8 +1752,8 @@ export default function MetricsComparePage() {
             </button>
             <button
               type="button"
-              className="btn btn-ghost btn-sm metrics-preset-btn"
-              onClick={applyAsymmetricEntryPreset}
+              className={presetButtonClass('builtin:asymmetric_entry')}
+              onClick={() => applyBuiltinPreset('builtin:asymmetric_entry', applyAsymmetricEntryPreset)}
               disabled={selectedGemIds.length === 0}
               title="Tip: (quality + pessimistic price). Stock Compounder Checklist min 8, Implied 10Y CAGR % (VCA) max 12%, Downside risk (BITS) max 25% — good business, dull quote"
             >
@@ -1398,8 +1761,10 @@ export default function MetricsComparePage() {
             </button>
             <button
               type="button"
-              className="btn btn-ghost btn-sm metrics-preset-btn"
-              onClick={applyAntifragileCompoundersPreset}
+              className={presetButtonClass('builtin:antifragile_compounders')}
+              onClick={() =>
+                applyBuiltinPreset('builtin:antifragile_compounders', applyAntifragileCompoundersPreset)
+              }
               disabled={selectedGemIds.length === 0}
               title="Tip: (resilience + compounding). AntiFragile min 8.5, Stock Compounder Checklist min 8.5, Downside risk (BITS) max 25%"
             >
@@ -1407,8 +1772,10 @@ export default function MetricsComparePage() {
             </button>
             <button
               type="button"
-              className="btn btn-ghost btn-sm metrics-preset-btn"
-              onClick={applyForensicChecklistHighBarPreset}
+              className={presetButtonClass('builtin:forensic_checklist_high_bar')}
+              onClick={() =>
+                applyBuiltinPreset('builtin:forensic_checklist_high_bar', applyForensicChecklistHighBarPreset)
+              }
               disabled={selectedGemIds.length === 0}
               title="Tip: (fewer, higher-conviction names). Terminal Value – Alpha & Forensic min 8.5, Stock Checklist min 8, Lollapalooza Moat min 8"
             >
@@ -1416,14 +1783,121 @@ export default function MetricsComparePage() {
             </button>
             <button
               type="button"
-              className="btn btn-ghost btn-sm metrics-preset-btn"
-              onClick={applyQualityGrowthValuePreset}
+              className={presetButtonClass('builtin:quality_growth_value')}
+              onClick={() => applyBuiltinPreset('builtin:quality_growth_value', applyQualityGrowthValuePreset)}
               disabled={selectedGemIds.length === 0}
               title="Tip: (quality + growth + value). Terminal Value min 8.5, Stock Checklist & Compounder min 8, 5Y value compounding min 12 when present, Implied 10Y CAGR % (VCA) min 12%, Downside risk (BITS) max 25%"
             >
               Quality + Growth + Value
             </button>
           </div>
+
+          <div className="metrics-filter-presets-group metrics-filter-presets-group--custom">
+            <span className="metrics-filter-presets-group-label">Custom presets</span>
+            {customPresets.length === 0 ? (
+              <span className="metrics-quotes-status metrics-quotes-status--row">
+                No custom presets yet. Set filters, then click Save current as preset.
+              </span>
+            ) : (
+              customPresets.map(p => (
+                <button
+                  key={p.id}
+                  type="button"
+                  className={presetButtonClass(p.id)}
+                  onClick={() => applyCustomPreset(p)}
+                  disabled={selectedGemIds.length === 0}
+                  title={p.title || p.label}
+                >
+                  {p.label}
+                </button>
+              ))
+            )}
+          </div>
+        <input
+          ref={importPresetsInputRef}
+          type="file"
+          accept="application/json,.json"
+          onChange={handleImportPresetPackFile}
+          style={{ display: 'none' }}
+        />
+        <div className="metrics-presets-controls">
+          <div className="metrics-presets-controls-row metrics-presets-controls-row--primary">
+            <input
+              type="text"
+              className="scores-search metrics-preset-name-input"
+              value={newPresetName}
+              onChange={e => setNewPresetName(e.target.value)}
+              placeholder="New preset name..."
+              aria-label="New custom preset name"
+              disabled={selectedGemIds.length === 0}
+            />
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={saveNewCustomPreset}
+              disabled={selectedGemIds.length === 0}
+              title="Save current filter figures as a new custom preset"
+            >
+              Save current as preset
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={updateActivePreset}
+              disabled={selectedGemIds.length === 0 || !activePresetId}
+              title="Update the active preset with current filter figures"
+            >
+              Update active preset
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={deleteActiveCustomPreset}
+              disabled={selectedGemIds.length === 0 || !activeCustomPreset}
+              title="Delete the active custom preset"
+            >
+              Delete active custom preset
+            </button>
+          </div>
+          <div className="metrics-presets-controls-row metrics-presets-controls-row--secondary">
+            <label className="metrics-checkbox" title="Choose whether preset import should merge or replace existing local presets">
+              <input
+                type="checkbox"
+                checked={importMode === 'merge'}
+                onChange={e => setImportMode(e.target.checked ? 'merge' : 'replace')}
+              />
+              Merge import
+            </label>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={handleImportPresetPackClick}
+              title={
+                importMode === 'merge'
+                  ? 'Import preset pack JSON and merge with local presets'
+                  : 'Import preset pack JSON and replace local presets'
+              }
+            >
+              Import presets (.json)
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={exportPresetPack}
+              title="Export custom presets and built-in overrides to JSON"
+            >
+              Export presets (.json)
+            </button>
+            <span className="metrics-preset-chip" title={`Current active preset: ${activePresetLabel}`}>
+              Active: {activePresetLabel}
+            </span>
+            {presetNotice ? (
+              <span className="metrics-quotes-status metrics-quotes-status--row">{presetNotice}</span>
+            ) : null}
+          </div>
+        </div>
+            </>
+          ) : null}
         </div>
         <button
           type="button"
