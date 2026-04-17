@@ -7,7 +7,14 @@ import { currentRouteWithSearch } from '../lib/navigationState';
 import type { Gem } from '../types';
 
 type ViewMode = 'companies' | 'gems';
-type SortOption = 'name-asc' | 'name-desc' | 'ticker-asc' | 'ticker-desc' | 'reports-desc';
+type SortOption =
+  | 'name-asc'
+  | 'name-desc'
+  | 'ticker-asc'
+  | 'ticker-desc'
+  | 'reports-desc'
+  | 'avg-desc'
+  | 'avg-asc';
 type GemSortOption =
   | 'category-asc' | 'category-desc'
   | 'name-asc' | 'name-desc'
@@ -120,10 +127,23 @@ export default function CompaniesPage() {
       case 'ticker-asc': result.sort((a, b) => a.ticker.localeCompare(b.ticker)); break;
       case 'ticker-desc': result.sort((a, b) => b.ticker.localeCompare(a.ticker)); break;
       case 'reports-desc': result.sort((a, b) => (runCountByCompany.get(b.id) ?? 0) - (runCountByCompany.get(a.id) ?? 0)); break;
+      case 'avg-desc':
+      case 'avg-asc': {
+        const dir = sort === 'avg-desc' ? -1 : 1;
+        result.sort((a, b) => {
+          const va = avgWeightedByCompanyId.get(a.id) ?? null;
+          const vb = avgWeightedByCompanyId.get(b.id) ?? null;
+          if (va == null && vb == null) return 0;
+          if (va == null) return 1;
+          if (vb == null) return -1;
+          return (va - vb) * dir;
+        });
+        break;
+      }
     }
 
     return result;
-  }, [companies, search, sort, onlyWithReports, runCountByCompany]);
+  }, [companies, search, sort, onlyWithReports, runCountByCompany, avgWeightedByCompanyId]);
 
   const filteredGems = useMemo(() => {
     let result = [...gems];
@@ -320,6 +340,8 @@ export default function CompaniesPage() {
                 <option value="ticker-asc">Ticker A–Z</option>
                 <option value="ticker-desc">Ticker Z–A</option>
                 <option value="reports-desc">Most Reports</option>
+                <option value="avg-desc">Avg score (high to low)</option>
+                <option value="avg-asc">Avg score (low to high)</option>
               </select>
               <label className="toggle-label">
                 <input
