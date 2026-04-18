@@ -11,11 +11,16 @@ export function sanitizeFilename(s: string, max = 56): string {
   return t || 'X';
 }
 
-export function scoresLandscapeFilename(): string {
+export function scorecardLandscapeFilename(): string {
   const d = new Date();
   const dateStr = d.toISOString().slice(0, 10);
   const timeStr = d.toTimeString().slice(0, 8).replace(/:/g, '-');
-  return `Tjiunardi_Scores_Landscape_${dateStr}_${timeStr}.csv`;
+  return `Tjiunardi_Scorecard_Landscape_${dateStr}_${timeStr}.csv`;
+}
+
+/** @deprecated Use {@link scorecardLandscapeFilename} */
+export function scoresLandscapeFilename(): string {
+  return scorecardLandscapeFilename();
 }
 
 function escapeCSV(val: string | number | null | undefined): string {
@@ -27,9 +32,17 @@ function escapeCSV(val: string | number | null | undefined): string {
   return s;
 }
 
-export function buildScoresLandscapeCSV(companies: CompanyScores[]): string {
+export type ScorecardCsvMeta = { exportedAt: string };
+
+export function buildScoresLandscapeCSV(companies: CompanyScores[], csvMeta?: ScorecardCsvMeta): string {
   const rows: string[] = [];
-  
+  if (csvMeta?.exportedAt) {
+    rows.push(`# exported_at,${escapeCSV(csvMeta.exportedAt)}`);
+    rows.push(
+      `# note,${escapeCSV('Weighted scores: latest gem run per score type per company (columns may differ in recency).')}`,
+    );
+  }
+
   const headers = [
     'Company',
     'Ticker',

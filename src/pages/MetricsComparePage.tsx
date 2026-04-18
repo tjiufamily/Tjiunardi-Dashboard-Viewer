@@ -40,7 +40,14 @@ import {
   buildMetricsLandscapeCSV,
   metricsLandscapeFilename,
 } from '../lib/exportMetrics';
-import { downloadTextFile } from '../lib/exportScores';
+import { downloadTextFile, sanitizeFilename } from '../lib/exportScores';
+import {
+  batchSizingPacketFilename,
+  buildBatchSizingPacketMarkdown,
+  saveTextFileWithPicker,
+} from '../lib/exportPositionSizing';
+import { buildPositionSizingHref } from '../lib/positionSizingDeepLink';
+import { InvestorGuidePanels } from '../components/InvestorGuidePanels';
 
 const METRICS_TH_TIP_LAST_PRICE =
   'Delayed price from Finnhub, Yahoo Finance, or Gemini backup. Cached across sessions. Click a cell to enter a manual override (shown in orange).';
@@ -432,6 +439,8 @@ type EnrichedRow = Row & {
   impliedCagr: number | null;
   bitsDownsideRisk: number | null;
   bitsToVcaTenYearCagr: number | null;
+  /** BITS-style target price when used for downside / batch sizing anchor. */
+  bitsTargetPrice: number | null;
 };
 
 function fmtLastRefreshed(lastRefreshedAt: number, nowMs: number): string {
@@ -484,6 +493,12 @@ export default function MetricsComparePage() {
   const [customPresets, setCustomPresets] = useState<CustomPreset[]>(loadCustomPresets);
   const [presetOverrides, setPresetOverrides] = useState<Record<string, PresetSnapshot>>(loadPresetOverrides);
   const [activePresetId, setActivePresetId] = useState<string | null>(null);
+  /** Last time a preset was applied (for export changelog). */
+  const [lastPresetApplication, setLastPresetApplication] = useState<{
+    presetId: string;
+    label: string;
+    appliedAt: string;
+  } | null>(null);
   const [presetNotice, setPresetNotice] = useState<string | null>(null);
   const [newPresetName, setNewPresetName] = useState('');
   const [importMode, setImportMode] = useState<'replace' | 'merge'>('merge');
@@ -979,6 +994,11 @@ export default function MetricsComparePage() {
   const applyBuiltinPreset = useCallback(
     (presetId: string, applyDefault: () => void) => {
       setActivePresetId(presetId);
+      setLastPresetApplication({
+        presetId,
+        label: BUILTIN_PRESET_LABELS[presetId] ?? presetId,
+        appliedAt: new Date().toISOString(),
+      });
       const override = presetOverrides[presetId];
       if (override) {
         applyPresetSnapshot(override);
@@ -992,6 +1012,11 @@ export default function MetricsComparePage() {
   const applyCustomPreset = useCallback(
     (preset: CustomPreset) => {
       setActivePresetId(preset.id);
+      setLastPresetApplication({
+        presetId: preset.id,
+        label: `${preset.label} (custom)`,
+        appliedAt: new Date().toISOString(),
+      });
       applyPresetSnapshot(preset.snapshot);
     },
     [applyPresetSnapshot],
@@ -1021,6 +1046,7 @@ export default function MetricsComparePage() {
     setCustomPresets(next);
     persistCustomPresets(next);
     setActivePresetId(id);
+    setLastPresetApplication({ presetId: id, label: `${label} (custom)`, appliedAt: new Date().toISOString() });
     setNewPresetName('');
     setPresetNotice(`Saved preset "${label}".`);
   }, [customPresets, currentPresetSnapshot, newPresetName]);
@@ -1335,7 +1361,9 @@ export default function MetricsComparePage() {
         target > 0
           ? impliedCagrPercentFromPrices(bitsTarget, target)
           : null;
-      return { ...r, lastPrice, cachedQuoteLabel, impliedCagr, bitsDownsideRisk, bitsToVcaTenYearCagr };
+      const bitsTargetPrice =
+        typeof bitsTarget === 'number' && bitsTarget > 0 && Number.isFinite(bitsTarget) ? bitsTarget : null;
+      return { ...r, lastPrice, cachedQuoteLabel, impliedCagr, bitsDownsideRisk, bitsToVcaTenYearCagr, bitsTargetPrice };
     });
   }, [
     rows,
@@ -1357,11 +1385,13 @@ export default function MetricsComparePage() {
 
   const buildSizingUrl = useCallback(
     (r: EnrichedRow) => {
-      const params = new URLSearchParams({ company: r.companyId });
       if (r.impliedCagr != null && !Number.isNaN(r.impliedCagr)) {
-        params.set('cagr', r.impliedCagr.toFixed(2));
-        params.set('cagrSrc', 'implied');
-        return `/position-sizing?${params.toString()}`;
+        return buildPositionSizingHref({
+          companyId: r.companyId,
+          cagr: r.impliedCagr,
+          cagrSrc: 'implied',
+          returnTo,
+        });
       }
       const primaryGemRuns = primarySelectedGem ? selectedRunsByGem.get(primarySelectedGem.id) ?? [] : [];
       const primaryKeys = metricStorageKeysForGem(primarySelectedGem, primaryGemRuns);
@@ -1370,12 +1400,16 @@ export default function MetricsComparePage() {
         pk != null && primarySelectedGem ? `${primarySelectedGem.id}${METRIC_COL_ID_SEP}${pk}` : undefined;
       const raw = columnId ? r.metrics[columnId] : undefined;
       if (raw != null && typeof raw === 'number' && !Number.isNaN(raw)) {
-        params.set('cagr', String(raw));
-        params.set('cagrSrc', 'base_case');
+        return buildPositionSizingHref({
+          companyId: r.companyId,
+          cagr: raw,
+          cagrSrc: 'base_case',
+          returnTo,
+        });
       }
-      return `/position-sizing?${params.toString()}`;
+      return buildPositionSizingHref({ companyId: r.companyId, returnTo });
     },
-    [primarySelectedGem, selectedRunsByGem],
+    [primarySelectedGem, selectedRunsByGem, returnTo],
   );
 
   const toggleSort = (key: SortKey) => {
@@ -1505,21 +1539,72 @@ export default function MetricsComparePage() {
   ]);
 
   const exportLandscape = useCallback(() => {
+    const exportedAt = new Date().toISOString();
+    const presetSlug =
+      activePresetId != null
+        ? sanitizeFilename(activePresetId.replace(/^builtin:/, '').replace(/:/g, '_'), 40)
+        : 'no-preset';
     const csv = buildMetricsLandscapeCSV({
       rows: filteredSorted,
       metricColumnIds: metricColumns.map(c => c.id),
       metricColumnHeaders: metricExportHeaders,
       showBitsDerived,
       showWeightedScores,
+      csvMeta: {
+        exportedAt,
+        presetLabel: lastPresetApplication?.label,
+        presetId: lastPresetApplication?.presetId,
+        presetAppliedAt: lastPresetApplication?.appliedAt,
+      },
     });
-    downloadTextFile(metricsLandscapeFilename(), csv, 'text/csv;charset=utf-8');
+    downloadTextFile(metricsLandscapeFilename({ presetSlug }), csv, 'text/csv;charset=utf-8');
   }, [
     filteredSorted,
     metricColumns,
     metricExportHeaders,
     showBitsDerived,
     showWeightedScores,
+    activePresetId,
+    lastPresetApplication,
   ]);
+
+  const exportSizingPacket = useCallback(async () => {
+    if (filteredSorted.length === 0) return;
+    const byId = new Map<string, CompanyScores>();
+    for (const c of companyScores) byId.set(c.companyId, c);
+    const rowInputs = filteredSorted.map(r => ({
+      companyId: r.companyId,
+      cagrDisplay:
+        r.impliedCagr != null && !Number.isNaN(r.impliedCagr) ? Number(r.impliedCagr.toFixed(4)).toString() : '',
+      downsideDisplay:
+        r.bitsDownsideRisk != null && !Number.isNaN(r.bitsDownsideRisk)
+          ? Number(r.bitsDownsideRisk.toFixed(4)).toString()
+          : '',
+      downsideAnchorPrice: r.bitsTargetPrice,
+    }));
+    const exportedAt = new Date().toISOString();
+    const preambleLines: string[] = [
+      `- **Gem metrics row count:** ${filteredSorted.length}`,
+      `- **Active preset (label):** ${activePresetLabel}`,
+    ];
+    if (lastPresetApplication) {
+      preambleLines.push(
+        `- **Last preset applied:** ${lastPresetApplication.label} (${lastPresetApplication.presetId}) at ${lastPresetApplication.appliedAt}`,
+      );
+    }
+    const md = buildBatchSizingPacketMarkdown({
+      exportedAt,
+      companiesById: byId,
+      rowInputs,
+      preambleLines,
+    });
+    await saveTextFileWithPicker(
+      batchSizingPacketFilename(filteredSorted.length),
+      md,
+      'text/markdown;charset=utf-8',
+      'md',
+    );
+  }, [filteredSorted, companyScores, activePresetLabel, lastPresetApplication]);
 
   const arrow = (key: SortKey) => (sortKey === key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
 
@@ -1570,9 +1655,9 @@ export default function MetricsComparePage() {
   return (
     <div className="scores-page metrics-page">
       <div className="scores-header">
-        <h2>Gem metrics &amp; scores</h2>
+        <h2>Gem metrics</h2>
         <p className="scores-subtitle">
-          Latest captured metrics and weighted scores (latest per score type).{' '}
+          Latest captured metrics per selected gem; optional weighted scores (latest run per score type).{' '}
           {selectedGemIds.length > 0 ? (
             <span className="scores-subtitle-count">{filteredSorted.length} companies</span>
           ) : (
@@ -1580,6 +1665,8 @@ export default function MetricsComparePage() {
           )}
         </p>
       </div>
+
+      <InvestorGuidePanels variant="gem-metrics" />
 
       <div className="scores-toolbar metrics-toolbar">
         <div className="metrics-gem-row">
@@ -1914,6 +2001,15 @@ export default function MetricsComparePage() {
           disabled={selectedGemIds.length === 0 || filteredSorted.length === 0}
         >
           Export table (.csv)
+        </button>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={() => void exportSizingPacket()}
+          disabled={selectedGemIds.length === 0 || filteredSorted.length === 0}
+          title="One Markdown file: position-sizing narrative for each visible row, using bracket settings from Position Sizing (this browser)"
+        >
+          Export sizing packet (.md)
         </button>
         <button
           type="button"

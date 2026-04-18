@@ -200,7 +200,13 @@ a.btn { text-decoration: none; color: inherit; }
   color: var(--text-primary);
   font-family: var(--font); font-size: 0.8125rem;
   appearance: none; cursor: pointer;
+  color-scheme: dark;
   transition: border-color var(--transition);
+}
+.sort-select option,
+.sort-select optgroup {
+  background-color: var(--bg-card);
+  color: var(--text-primary);
 }
 .sort-select:focus { outline: none; border-color: var(--border-focus); }
 .sort-select.small { padding: 7px 28px 7px 10px; font-size: 0.8rem; }
@@ -519,6 +525,164 @@ a.btn { text-decoration: none; color: inherit; }
 .category-pill.active:hover {
   background: rgba(99, 102, 241, 0.2);
   color: var(--accent-hover);
+}
+
+/* Dashboard: category toolbar (By Gems) */
+.gem-category-toolbar {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  /* Native <select> lists on Windows use OS colors; dark scheme fixes white menu + light text. */
+  color-scheme: dark;
+}
+.gem-category-toolbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+.gem-category-toolbar-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+.category-option-filter {
+  flex: 1;
+  min-width: 140px;
+  max-width: 220px;
+  padding: 8px 12px;
+  font-size: 0.875rem;
+  font-family: var(--font);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-primary);
+}
+.category-option-filter:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+}
+/* Layout only; colors / chevron / dark list come from .sort-select */
+.gem-category-select {
+  flex: 2;
+  min-width: 200px;
+  font-size: 0.875rem;
+}
+.gem-category-toolbar-hint {
+  margin: 10px 0 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.gem-layout-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--bg-card);
+}
+.gem-layout-btn {
+  padding: 8px 14px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  font-family: var(--font);
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+.gem-layout-btn:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
+}
+.gem-layout-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.results-pagination-meta {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.gem-card-header-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.gem-metric-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--success);
+  background: var(--success-soft);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+}
+
+.gem-card-companies-row {
+  font-size: 0.78rem;
+  min-height: 1.25em;
+}
+.gem-companies-muted {
+  color: var(--text-muted);
+}
+.gem-companies-count {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+a.gem-companies-link {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+a.gem-companies-link:hover {
+  text-decoration: underline;
+}
+
+.gem-flat-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.gem-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 8px 0 4px;
+}
+.gem-pagination-status {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.gem-category-show-more {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+  text-align: center;
+}
+
+.companies-page .gem-card {
+  cursor: pointer;
+}
+.companies-page .gem-card:not(.has-runs):hover {
+  background: var(--bg-card-hover);
+  border-color: var(--accent);
+  box-shadow: var(--shadow-md), var(--shadow-glow);
+  transform: translateY(-2px);
 }
 
 /* ===================
@@ -2819,6 +2983,93 @@ a.btn { text-decoration: none; color: inherit; }
   .sizing-downside-dual .sizing-downside-slider {
     max-width: 100%;
   }
+}
+
+/* --- Investor guide (Scorecard / Gem metrics) --- */
+.investor-guide-panels {
+  margin: 0 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.investor-guide-details {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  padding: 0 12px;
+}
+.investor-guide-summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.9rem;
+  padding: 10px 4px;
+  color: var(--text-primary);
+  list-style: none;
+}
+.investor-guide-summary::-webkit-details-marker {
+  display: none;
+}
+.investor-guide-body {
+  padding: 0 4px 14px;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.investor-guide-body p {
+  margin: 0 0 10px;
+}
+.investor-guide-h {
+  margin: 14px 0 6px;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.investor-guide-muted {
+  margin: 0 0 6px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+.investor-guide-score-list {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+.investor-guide-score-list li {
+  margin-bottom: 4px;
+}
+.investor-guide-legend {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 8px;
+}
+.investor-guide-legend li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+  font-size: 0.82rem;
+}
+.investor-guide-swatch {
+  display: inline-block;
+  min-width: 5.5rem;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.sizing-return-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin: 4px 0 12px;
+}
+.sizing-return-hint {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+  max-width: 52rem;
 }
 
 /* ===================

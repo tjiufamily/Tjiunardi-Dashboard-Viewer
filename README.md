@@ -73,7 +73,8 @@ Open **http://localhost:5174** in your browser.
 - **View gems** for each company, sorted by rank or name.
 - **View all conversations** (reports) for any company + gem combination.
 - **Open conversations in Gemini** by tapping the "Open in Gemini" button (opens in a new tab).
-- **Metrics** (`/metrics`): pick a gem and compare companies in a table using the **latest run’s `captured_metrics`** for that gem (column labels from `gems.capture_config` when present), plus **weighted scores** (same eight score types as the Scores page). Optional URL: `/metrics?gem=<gem_id>` to pre-select a gem.
+- **Gem metrics** (`/metrics`): pick one or more gems and compare companies using each gem’s **latest run `captured_metrics`** (column labels from `gems.capture_config` when present), plus optional **weighted score** columns (same eight score types as the Scorecard). Optional URL: `/metrics?gem=<gem_id>` to pre-select a gem.
+- **Scorecard** (`/scores`): weighted score landscape only (latest run per score type), without gem metric columns.
 
 This is a **read-only** viewer. It does not create or modify any data in your Supabase database.
 

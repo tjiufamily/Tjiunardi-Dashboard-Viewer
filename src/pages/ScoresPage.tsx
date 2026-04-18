@@ -13,9 +13,11 @@ import { ColumnMinFilterCell } from '../components/ColumnMinFilterCell';
 import { currentRouteWithSearch } from '../lib/navigationState';
 import {
   buildScoresLandscapeCSV,
-  scoresLandscapeFilename,
+  scorecardLandscapeFilename,
   downloadTextFile,
 } from '../lib/exportScores';
+import { buildPositionSizingHref } from '../lib/positionSizingDeepLink';
+import { InvestorGuidePanels } from '../components/InvestorGuidePanels';
 
 type SortKey = 'name' | 'ticker' | ScoreType | 'avg' | 'safetyAvg';
 type SortDir = 'asc' | 'desc';
@@ -54,8 +56,8 @@ export default function ScoresPage() {
   };
 
   const exportLandscape = () => {
-    const csv = buildScoresLandscapeCSV(filtered);
-    const filename = scoresLandscapeFilename();
+    const csv = buildScoresLandscapeCSV(filtered, { exportedAt: new Date().toISOString() });
+    const filename = scorecardLandscapeFilename();
     downloadTextFile(filename, csv, 'text/csv;charset=utf-8');
   };
 
@@ -147,7 +149,7 @@ export default function ScoresPage() {
     return (
       <div className="page-loading">
         <div className="spinner" />
-        <p>Loading scores...</p>
+        <p>Loading scorecard…</p>
       </div>
     );
   }
@@ -155,9 +157,11 @@ export default function ScoresPage() {
   return (
     <div className="scores-page">
       <div className="scores-header">
-        <h2>Weighted Scores Overview</h2>
-        <p className="scores-subtitle">{filtered.length} companies with scored gem runs</p>
+        <h2>Scorecard</h2>
+        <p className="scores-subtitle">{filtered.length} companies with weighted scores (latest per score type)</p>
       </div>
+
+      <InvestorGuidePanels variant="scorecard" />
 
       <div className="scores-toolbar">
         <button type="button" className="btn btn-ghost btn-sm scores-reset-filters" onClick={resetFilters}>
@@ -292,7 +296,9 @@ export default function ScoresPage() {
                     <button
                       type="button"
                       className="btn btn-sm btn-primary"
-                      onClick={() => navigate(`/position-sizing?company=${c.companyId}`)}
+                      onClick={() =>
+                        navigate(buildPositionSizingHref({ companyId: c.companyId, returnTo }))
+                      }
                     >
                       Pos Size
                     </button>

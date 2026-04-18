@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import type { ReactNode } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useScoresData } from '../hooks/useScores';
 import { useGems, useCompanyRuns } from '../hooks/useData';
 import { useStockQuotes } from '../hooks/useStockQuotes';
@@ -53,6 +53,11 @@ import {
   positionSizingReportFilename,
   saveTextFileWithPicker,
 } from '../lib/exportPositionSizing';
+import {
+  RETURN_TO_QUERY_KEY,
+  backLabelForReturnTo,
+  isSafeInternalReturnPath,
+} from '../lib/positionSizingDeepLink';
 
 const LS_SIZING_SCORE = 'tjiunardi.dashboard.sizing.score.v1';
 const LS_SIZING_CAGR = 'tjiunardi.dashboard.sizing.cagr.v1';
@@ -199,6 +204,10 @@ export default function PositionSizingPage() {
   const { companyScores, loading, scoreColumnDescriptions } = useScoresData();
   const { gems, loading: gemsLoading } = useGems();
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const returnToRaw = searchParams.get(RETURN_TO_QUERY_KEY);
+  const returnToSafe =
+    returnToRaw != null && returnToRaw !== '' && isSafeInternalReturnPath(returnToRaw) ? returnToRaw : null;
 
   const [selectedCompanyId, setSelectedCompanyId] = useState(() => searchParams.get('company') ?? '');
   const [cagr, setCagr] = useState(() => searchParams.get('cagr') ?? '');
@@ -907,7 +916,15 @@ export default function PositionSizingPage() {
     setDownside('');
     setDownsidePrice('');
     setDownsideLead('pct');
-    setSearchParams(id ? { company: id } : {});
+    const rt = searchParams.get(RETURN_TO_QUERY_KEY);
+    if (!id) {
+      setSearchParams(rt ? new URLSearchParams([[RETURN_TO_QUERY_KEY, rt]]) : {});
+    } else {
+      const next = new URLSearchParams();
+      next.set('company', id);
+      if (rt) next.set(RETURN_TO_QUERY_KEY, rt);
+      setSearchParams(next);
+    }
   };
 
   const selectedIsFavourite = useMemo(
@@ -1031,10 +1048,14 @@ export default function PositionSizingPage() {
         stage4: fav.settings.stageToggles.stage4 ?? true,
         stage5: fav.settings.stageToggles.stage5 ?? true,
       });
-      setSearchParams({
-        company: fav.companyId,
-        cagr: fav.settings.cagr,
-        cagrSrc: fav.settings.cagrSource,
+      setSearchParams(prev => {
+        const n = new URLSearchParams();
+        n.set('company', fav.companyId);
+        n.set('cagr', fav.settings.cagr);
+        n.set('cagrSrc', fav.settings.cagrSource);
+        const rt = prev.get(RETURN_TO_QUERY_KEY);
+        if (rt) n.set(RETURN_TO_QUERY_KEY, rt);
+        return n;
       });
     },
     [setSearchParams],
@@ -1309,6 +1330,25 @@ export default function PositionSizingPage() {
             <span className="sizing-rules-switch-state">{showRules ? 'On' : 'Off'}</span>
           </label>
         </div>
+        {returnToSafe ? (
+          <div className="sizing-return-row">
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => navigate(returnToSafe)}>
+              {backLabelForReturnTo(returnToSafe)}
+            </button>
+            {!searchParams.get('cagr') && returnToSafe.startsWith('/scores') ? (
+              <span className="sizing-return-hint">
+                CAGR and prices use the same rules as a direct open: implied from VCA when available; manual last prices
+                are shared with Gem metrics.
+              </span>
+            ) : null}
+            {searchParams.get('cagr') && returnToSafe.startsWith('/metrics') ? (
+              <span className="sizing-return-hint">
+                CAGR and its source preset were copied from the Gem metrics row; last-price overrides use the same saved
+                prices as that table.
+              </span>
+            ) : null}
+          </div>
+        ) : null}
         <p className="sizing-subtitle">
           Select a company to see recommended position size from weighted scores, CAGR, probability (selected quality
           metrics + their average), downside haircut, then optional safety (pre-mortem &amp; gauntlet). Adjustable rules

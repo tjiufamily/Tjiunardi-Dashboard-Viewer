@@ -9,8 +9,8 @@ export default function Layout({ children }: PropsWithChildren) {
 
   const navItems = [
     { path: '/', label: 'Dashboard' },
-    { path: '/scores', label: 'Scores' },
-    { path: '/metrics', label: 'Metrics' },
+    { path: '/scores', label: 'Scorecard' },
+    { path: '/metrics', label: 'Gem metrics' },
     { path: '/position-sizing', label: 'Position Sizing' },
   ];
 

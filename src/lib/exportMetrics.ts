@@ -1,6 +1,7 @@
 import { QUALITY_SCORE_TYPES, SAFETY_SCORE_TYPES, SCORE_LABELS } from '../types';
 import type { ScoreType } from '../types';
 import { avgOfScores, avgOfSafetyScores } from './columnMinFilters';
+import { sanitizeFilename } from './exportScores';
 
 export type MetricsLandscapeRow = {
   companyName: string;
@@ -22,12 +23,28 @@ function escapeCSV(val: string | number | null | undefined): string {
   return s;
 }
 
-export function metricsLandscapeFilename(): string {
+export type MetricsExportFilenameMeta = {
+  /** Short slug for filesystem, e.g. `safety-first-compounders` */
+  presetSlug?: string;
+};
+
+export function metricsLandscapeFilename(meta?: MetricsExportFilenameMeta): string {
   const d = new Date();
   const dateStr = d.toISOString().slice(0, 10);
   const timeStr = d.toTimeString().slice(0, 8).replace(/:/g, '-');
-  return `Tjiunardi_Metrics_Landscape_${dateStr}_${timeStr}.csv`;
+  const presetPart =
+    meta?.presetSlug != null && meta.presetSlug.trim() !== ''
+      ? `_${sanitizeFilename(meta.presetSlug.replace(/:/g, '_'), 40)}`
+      : '';
+  return `Tjiunardi_GemMetrics_Landscape${presetPart}_${dateStr}_${timeStr}.csv`;
 }
+
+export type MetricsCsvExportMeta = {
+  exportedAt: string;
+  presetLabel?: string;
+  presetId?: string;
+  presetAppliedAt?: string;
+};
 
 export function buildMetricsLandscapeCSV(args: {
   rows: MetricsLandscapeRow[];
@@ -35,8 +52,23 @@ export function buildMetricsLandscapeCSV(args: {
   metricColumnHeaders: string[];
   showBitsDerived: boolean;
   showWeightedScores: boolean;
+  csvMeta?: MetricsCsvExportMeta;
 }): string {
-  const { rows, metricColumnIds, metricColumnHeaders, showBitsDerived, showWeightedScores } = args;
+  const { rows, metricColumnIds, metricColumnHeaders, showBitsDerived, showWeightedScores, csvMeta } = args;
+
+  const metaLines: string[] = [];
+  if (csvMeta) {
+    metaLines.push(`# exported_at,${escapeCSV(csvMeta.exportedAt)}`);
+    if (csvMeta.presetLabel != null && csvMeta.presetAppliedAt != null) {
+      const appliedSummary = `${csvMeta.presetLabel} (${csvMeta.presetId ?? 'n/a'}) at ${csvMeta.presetAppliedAt}`;
+      metaLines.push(`# preset_applied,${escapeCSV(appliedSummary)}`);
+    }
+    metaLines.push(
+      `# note,${escapeCSV(
+        'Gem metrics: latest captured_metrics per selected gem per company. Weighted scores: latest gem run per score type (dates may differ).',
+      )}`,
+    );
+  }
 
   const headers: string[] = ['Company', 'Ticker', 'Last price (delayed)', 'Implied 10Y CAGR % (VCA)'];
   if (showBitsDerived) {
@@ -52,7 +84,7 @@ export function buildMetricsLandscapeCSV(args: {
     );
   }
 
-  const lines: string[] = [headers.map(escapeCSV).join(',')];
+  const lines: string[] = [...metaLines, headers.map(escapeCSV).join(',')];
 
   for (const r of rows) {
     const cells: string[] = [

@@ -3,7 +3,9 @@ import {
   type StagedTranchePlan,
   PROBABILITY_SCORE_TYPES,
   computeStagedTranchePlan,
+  calculatePositionSize,
 } from './positionSizing';
+import { loadSizingCalculatorSnapshotFromBrowserStorage, sizingInputsForCompany } from './sizingCalculatorSnapshot';
 import type { CompanyScores } from '../types';
 import { SCORE_LABELS } from '../types';
 
@@ -218,4 +220,60 @@ export function buildPositionSizingMarkdown(
 
 export function buildPositionSizingJson(payload: ExportPayload): string {
   return JSON.stringify(payload, null, 2);
+}
+
+export function batchSizingPacketFilename(rowCount: number): string {
+  const d = new Date();
+  const dateStr = d.toISOString().slice(0, 10);
+  const timeStr = d.toTimeString().slice(0, 8).replace(/:/g, '-');
+  return `Tjiunardi_PosSize_Packet_${rowCount}names_${dateStr}_${timeStr}.md`;
+}
+
+export type BatchSizingRowInput = {
+  companyId: string;
+  cagrDisplay: string;
+  downsideDisplay: string;
+  downsideAnchorPrice?: number | null;
+};
+
+/**
+ * One Markdown file with one full sizing narrative per company (same structure as single export).
+ * Uses bracket / stage settings from localStorage (same keys as Position Sizing), or app defaults.
+ */
+export function buildBatchSizingPacketMarkdown(args: {
+  exportedAt: string;
+  companiesById: Map<string, CompanyScores>;
+  rowInputs: BatchSizingRowInput[];
+  preambleLines?: string[];
+}): string {
+  const snap = loadSizingCalculatorSnapshotFromBrowserStorage();
+  const header: string[] = [
+    '# Position sizing packet (batch)',
+    '',
+    `- **Exported:** ${args.exportedAt}`,
+    `- **Companies:** ${args.rowInputs.length}`,
+    '',
+    'Per-name inputs below use **Implied 10Y CAGR % (VCA)** and **Downside Risk % (BITS)** from the Gem metrics table when available; ladder anchors use the BITS target price when present. Brackets and stage toggles match your **Position Sizing** saved settings in this browser (or defaults if none).',
+    '',
+  ];
+  if (args.preambleLines?.length) {
+    header.push(...args.preambleLines, '');
+  }
+  const sections: string[] = [];
+  for (const row of args.rowInputs) {
+    const company = args.companiesById.get(row.companyId);
+    if (!company) continue;
+    const cagrNum = row.cagrDisplay.trim() === '' || Number.isNaN(parseFloat(row.cagrDisplay)) ? null : parseFloat(row.cagrDisplay);
+    const downsideNum =
+      row.downsideDisplay.trim() === '' || Number.isNaN(parseFloat(row.downsideDisplay))
+        ? null
+        : parseFloat(row.downsideDisplay);
+    const inputs = sizingInputsForCompany(snap, company.scores, cagrNum, downsideNum);
+    const result = calculatePositionSize(inputs);
+    const md = buildPositionSizingMarkdown(company, row.cagrDisplay, row.downsideDisplay, result, {
+      downsideAnchorPrice: row.downsideAnchorPrice,
+    });
+    sections.push(md);
+  }
+  return [...header, sections.join('\n\n---\n\n')].join('\n');
 }
