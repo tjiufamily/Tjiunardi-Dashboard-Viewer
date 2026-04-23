@@ -8,6 +8,11 @@ export type MetricsLandscapeRow = {
   ticker: string;
   lastPrice: number | null;
   impliedCagr: number | null;
+  pegFwd: number | null;
+  fwdPe: number | null;
+  pegAdjustedEarnings: number | null;
+  peg2YrFwdEpsGrowth: number | null;
+  historicalPe: number | null;
   bitsDownsideRisk: number | null;
   bitsToVcaTenYearCagr: number | null;
   metrics: Record<string, number>;
@@ -70,7 +75,17 @@ export function buildMetricsLandscapeCSV(args: {
     );
   }
 
-  const headers: string[] = ['Company', 'Ticker', 'Last price (delayed)', 'Implied 10Y CAGR % (VCA)'];
+  const headers: string[] = [
+    'Company',
+    'Ticker',
+    'Last price (delayed)',
+    'Implied 10Y CAGR % (VCA)',
+    'PEG (fwd)',
+    'Fwd PE',
+    'PEG (Adjusted Earnings)',
+    'PEG (2 Yr Fwd EPS growth)',
+    'Historical PE',
+  ];
   if (showBitsDerived) {
     headers.push('Downside Risk % (BITS)', '10Y CAGR % (BITS→VCA)');
   }
@@ -92,6 +107,11 @@ export function buildMetricsLandscapeCSV(args: {
       r.ticker,
       r.lastPrice != null ? String(r.lastPrice) : '',
       r.impliedCagr != null ? `${r.impliedCagr.toFixed(2)}%` : '',
+      r.pegFwd != null ? r.pegFwd.toFixed(2) : '',
+      r.fwdPe != null ? r.fwdPe.toFixed(2) : '',
+      r.pegAdjustedEarnings != null ? r.pegAdjustedEarnings.toFixed(2) : '',
+      r.peg2YrFwdEpsGrowth != null ? r.peg2YrFwdEpsGrowth.toFixed(2) : '',
+      r.historicalPe != null ? r.historicalPe.toFixed(2) : '',
     ];
     if (showBitsDerived) {
       cells.push(

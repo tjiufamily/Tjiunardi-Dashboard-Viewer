@@ -57,6 +57,14 @@ const METRICS_TH_TIP_BITS_DOWNSIDE =
   'Downside Risk = 1 − (BITS — Asymmetric Alpha Analyst target price ÷ last price).';
 const METRICS_TH_TIP_BITS_TO_VCA =
   '10Y CAGR from BITS (Asymmetric Alpha Analyst) target price to Value Compounding Analyst V3.3 10Y target price.';
+const METRICS_TH_TIP_PEG_FWD =
+  'PEG (fwd) = (Last price / Forward EPS) / (((Forward EPS / Current Year EPS) − 1) × 100).';
+const METRICS_TH_TIP_FWD_PE = 'Fwd PE = Last price / Forward EPS.';
+const METRICS_TH_TIP_PEG_ADJUSTED_EARNINGS =
+  'PEG (Adjusted Earnings) = (Last price / ((Current Year EPS + Forward EPS) / 2)) / Adjusted (Operating) Earnings Growth Rate %.';
+const METRICS_TH_TIP_PEG_2YR_FWD_EPS_GROWTH =
+  'PEG (2 Yr Fwd EPS growth) = (Last price / ((Current Year EPS + Forward EPS) / 2)) / 2 Year Forward EPS Growth %.';
+const METRICS_TH_TIP_HISTORICAL_PE = 'Historical PE = Last price / Current Year EPS.';
 
 /** Default gem when opening Metrics with no `?gem=` (match by name). */
 const DEFAULT_METRICS_GEM_NAME = 'Value Compounding Analyst V3.3';
@@ -222,6 +230,11 @@ type SortKey =
   | 'ticker'
   | 'lastPrice'
   | 'impliedCagr'
+  | 'pegFwd'
+  | 'fwdPe'
+  | 'pegAdjustedEarnings'
+  | 'peg2YrFwdEpsGrowth'
+  | 'historicalPe'
   | 'bitsDownsideRisk'
   | 'bitsToVcaTenYearCagr'
   | 'avg'
@@ -348,6 +361,47 @@ function isDownsideRiskMetric(label: string, storageKey: string): boolean {
   return /downside/.test(s) && /risk|drawdown|loss/.test(s);
 }
 
+function isForwardEpsMetric(label: string, storageKey: string): boolean {
+  const s = `${label} ${storageKey}`.toLowerCase().replace(/\s+/g, ' ');
+  return /\b(forward|fwd)\b/.test(s) && /\beps\b/.test(s);
+}
+
+function isCurrentYearEpsMetric(label: string, storageKey: string): boolean {
+  const s = `${label} ${storageKey}`.toLowerCase().replace(/\s+/g, ' ');
+  if (!/\beps\b/.test(s)) return false;
+  return /\bcurrent\b.*\byear\b/.test(s) || /\bcurrent year\b/.test(s) || /\bcy\b/.test(s);
+}
+
+function isAdjustedOperatingEarningsGrowthRateMetric(label: string, storageKey: string): boolean {
+  const s = `${label} ${storageKey}`.toLowerCase().replace(/\s+/g, ' ');
+  const hasAdjusted = /\badjusted\b/.test(s);
+  const hasEarnings = /\bearnings?\b/.test(s);
+  const hasGrowth = /\bgrowth\b|\brate\b/.test(s);
+  const hasOperating = /\boperating\b/.test(s);
+  return hasAdjusted && hasEarnings && hasGrowth && (hasOperating || /adj.*earn.*growth/.test(s));
+}
+
+function isTwoYearForwardEpsGrowthMetric(label: string, storageKey: string): boolean {
+  const s = `${label} ${storageKey}`.toLowerCase().replace(/\s+/g, ' ');
+  const hasTwoYear = /\b2\b.*\by(ear)?\b|\b2[\s_-]*year\b|\btwo[\s_-]*year\b|\b2y\b|\b2yr\b/.test(s);
+  const hasForwardEps = /\b(forward|fwd)\b/.test(s) && /\beps\b/.test(s);
+  const hasGrowth = /\bgrowth\b|\brate\b|%|percent|pct/.test(s);
+  return hasTwoYear && hasForwardEps && hasGrowth;
+}
+
+function pegToneClass(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return 'metric-tone metric-tone--na';
+  if (value <= 1) return 'metric-tone metric-tone--excellent';
+  if (value <= 2) return 'metric-tone metric-tone--good';
+  if (value <= 3) return 'metric-tone metric-tone--fair';
+  return 'metric-tone metric-tone--low';
+}
+
+function peToneClass(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return 'metric-tone metric-tone--na';
+  return targetPeStyleToneClass(value);
+}
+
 function isCagrLikeMetric(label: string, storageKey: string): boolean {
   if (isValuationLowXGrowthMetric(label, storageKey)) return false;
   const s = `${label} ${storageKey}`.toLowerCase();
@@ -437,6 +491,11 @@ type EnrichedRow = Row & {
   lastPrice: number | null;
   cachedQuoteLabel: string | null;
   impliedCagr: number | null;
+  pegFwd: number | null;
+  fwdPe: number | null;
+  pegAdjustedEarnings: number | null;
+  peg2YrFwdEpsGrowth: number | null;
+  historicalPe: number | null;
   bitsDownsideRisk: number | null;
   bitsToVcaTenYearCagr: number | null;
   /** BITS-style target price when used for downside / batch sizing anchor. */
@@ -1297,6 +1356,44 @@ export default function MetricsComparePage() {
   }, [bitsSelectedGems, bitsAllRuns]);
   const showBitsDerived = bitsSelectedGems.length > 0;
   const vcaRunsLoading = allRunsLoading || gemsLoading;
+  const forwardEpsMetricColId = useMemo(() => {
+    const fromPrimary = primarySelectedGem
+      ? metricColumns.find(
+          col => col.gemId === primarySelectedGem.id && isForwardEpsMetric(col.label, col.key),
+        )
+      : undefined;
+    if (fromPrimary) return fromPrimary.id;
+    return metricColumns.find(col => isForwardEpsMetric(col.label, col.key))?.id;
+  }, [metricColumns, primarySelectedGem]);
+  const currentYearEpsMetricColId = useMemo(() => {
+    const fromPrimary = primarySelectedGem
+      ? metricColumns.find(
+          col => col.gemId === primarySelectedGem.id && isCurrentYearEpsMetric(col.label, col.key),
+        )
+      : undefined;
+    if (fromPrimary) return fromPrimary.id;
+    return metricColumns.find(col => isCurrentYearEpsMetric(col.label, col.key))?.id;
+  }, [metricColumns, primarySelectedGem]);
+  const adjustedOperatingEarningsGrowthRateMetricColId = useMemo(() => {
+    const fromPrimary = primarySelectedGem
+      ? metricColumns.find(
+          col =>
+            col.gemId === primarySelectedGem.id &&
+            isAdjustedOperatingEarningsGrowthRateMetric(col.label, col.key),
+        )
+      : undefined;
+    if (fromPrimary) return fromPrimary.id;
+    return metricColumns.find(col => isAdjustedOperatingEarningsGrowthRateMetric(col.label, col.key))?.id;
+  }, [metricColumns, primarySelectedGem]);
+  const twoYearForwardEpsGrowthMetricColId = useMemo(() => {
+    const fromPrimary = primarySelectedGem
+      ? metricColumns.find(
+          col => col.gemId === primarySelectedGem.id && isTwoYearForwardEpsGrowthMetric(col.label, col.key),
+        )
+      : undefined;
+    if (fromPrimary) return fromPrimary.id;
+    return metricColumns.find(col => isTwoYearForwardEpsGrowthMetric(col.label, col.key))?.id;
+  }, [metricColumns, primarySelectedGem]);
 
   // Sticky header rows: measure title row height so the filter row doesn't overlap.
   useLayoutEffect(() => {
@@ -1342,6 +1439,76 @@ export default function MetricsComparePage() {
         lastPrice != null && typeof target === 'number' && target > 0
           ? impliedCagrPercentFromPrices(lastPrice, target)
           : null;
+      const forwardEps = forwardEpsMetricColId != null ? r.metrics[forwardEpsMetricColId] : undefined;
+      const currentYearEps =
+        currentYearEpsMetricColId != null ? r.metrics[currentYearEpsMetricColId] : undefined;
+      const adjustedOperatingEarningsGrowthRatePercent =
+        adjustedOperatingEarningsGrowthRateMetricColId != null
+          ? r.metrics[adjustedOperatingEarningsGrowthRateMetricColId]
+          : undefined;
+      const twoYearForwardEpsGrowthPercent =
+        twoYearForwardEpsGrowthMetricColId != null ? r.metrics[twoYearForwardEpsGrowthMetricColId] : undefined;
+      const fwdPe =
+        lastPrice != null &&
+        Number.isFinite(lastPrice) &&
+        typeof forwardEps === 'number' &&
+        Number.isFinite(forwardEps) &&
+        forwardEps !== 0
+          ? lastPrice / forwardEps
+          : null;
+      const historicalPe =
+        lastPrice != null &&
+        Number.isFinite(lastPrice) &&
+        typeof currentYearEps === 'number' &&
+        Number.isFinite(currentYearEps) &&
+        currentYearEps !== 0
+          ? lastPrice / currentYearEps
+          : null;
+      const forwardGrowth =
+        typeof forwardEps === 'number' &&
+        Number.isFinite(forwardEps) &&
+        typeof currentYearEps === 'number' &&
+        Number.isFinite(currentYearEps) &&
+        currentYearEps !== 0
+          ? (forwardEps / currentYearEps - 1) * 100
+          : null;
+      const pegFwd =
+        fwdPe != null &&
+        Number.isFinite(fwdPe) &&
+        forwardGrowth != null &&
+        Number.isFinite(forwardGrowth) &&
+        forwardGrowth !== 0
+          ? fwdPe / forwardGrowth
+          : null;
+      const adjustedEarnings =
+        typeof forwardEps === 'number' &&
+        Number.isFinite(forwardEps) &&
+        typeof currentYearEps === 'number' &&
+        Number.isFinite(currentYearEps)
+          ? (currentYearEps + forwardEps) / 2
+          : null;
+      const pegAdjustedEarnings =
+        lastPrice != null &&
+        Number.isFinite(lastPrice) &&
+        adjustedEarnings != null &&
+        Number.isFinite(adjustedEarnings) &&
+        adjustedEarnings !== 0 &&
+        typeof adjustedOperatingEarningsGrowthRatePercent === 'number' &&
+        Number.isFinite(adjustedOperatingEarningsGrowthRatePercent) &&
+        adjustedOperatingEarningsGrowthRatePercent !== 0
+          ? (lastPrice / adjustedEarnings) / adjustedOperatingEarningsGrowthRatePercent
+          : null;
+      const peg2YrFwdEpsGrowth =
+        lastPrice != null &&
+        Number.isFinite(lastPrice) &&
+        adjustedEarnings != null &&
+        Number.isFinite(adjustedEarnings) &&
+        adjustedEarnings !== 0 &&
+        typeof twoYearForwardEpsGrowthPercent === 'number' &&
+        Number.isFinite(twoYearForwardEpsGrowthPercent) &&
+        twoYearForwardEpsGrowthPercent !== 0
+          ? (lastPrice / adjustedEarnings) / twoYearForwardEpsGrowthPercent
+          : null;
       const bitsRun = latestBitsByCompany.get(r.companyId);
       const bitsTarget =
         bitsTargetKey != null && bitsRun?.captured_metrics
@@ -1363,7 +1530,20 @@ export default function MetricsComparePage() {
           : null;
       const bitsTargetPrice =
         typeof bitsTarget === 'number' && bitsTarget > 0 && Number.isFinite(bitsTarget) ? bitsTarget : null;
-      return { ...r, lastPrice, cachedQuoteLabel, impliedCagr, bitsDownsideRisk, bitsToVcaTenYearCagr, bitsTargetPrice };
+      return {
+        ...r,
+        lastPrice,
+        cachedQuoteLabel,
+        impliedCagr,
+        pegFwd,
+        fwdPe,
+        pegAdjustedEarnings,
+        peg2YrFwdEpsGrowth,
+        historicalPe,
+        bitsDownsideRisk,
+        bitsToVcaTenYearCagr,
+        bitsTargetPrice,
+      };
     });
   }, [
     rows,
@@ -1374,6 +1554,10 @@ export default function MetricsComparePage() {
     latestVcaByCompany,
     latestBitsByCompany,
     bitsTargetKey,
+    forwardEpsMetricColId,
+    currentYearEpsMetricColId,
+    adjustedOperatingEarningsGrowthRateMetricColId,
+    twoYearForwardEpsGrowthMetricColId,
     refreshClock,
   ]);
 
@@ -1473,6 +1657,56 @@ export default function MetricsComparePage() {
       ) {
         return false;
       }
+      const minPegFwd = parseMinInput(columnMins['extra:pegFwd'] ?? '');
+      if (
+        !passesNumericBound(
+          r.pegFwd,
+          minPegFwd,
+          columnBoundModes['extra:pegFwd'] ?? 'min',
+        )
+      ) {
+        return false;
+      }
+      const minFwdPe = parseMinInput(columnMins['extra:fwdPe'] ?? '');
+      if (
+        !passesNumericBound(
+          r.fwdPe,
+          minFwdPe,
+          columnBoundModes['extra:fwdPe'] ?? 'min',
+        )
+      ) {
+        return false;
+      }
+      const minPegAdjustedEarnings = parseMinInput(columnMins['extra:pegAdjustedEarnings'] ?? '');
+      if (
+        !passesNumericBound(
+          r.pegAdjustedEarnings,
+          minPegAdjustedEarnings,
+          columnBoundModes['extra:pegAdjustedEarnings'] ?? 'min',
+        )
+      ) {
+        return false;
+      }
+      const minPeg2YrFwdEpsGrowth = parseMinInput(columnMins['extra:peg2YrFwdEpsGrowth'] ?? '');
+      if (
+        !passesNumericBound(
+          r.peg2YrFwdEpsGrowth,
+          minPeg2YrFwdEpsGrowth,
+          columnBoundModes['extra:peg2YrFwdEpsGrowth'] ?? 'min',
+        )
+      ) {
+        return false;
+      }
+      const minHistoricalPe = parseMinInput(columnMins['extra:historicalPe'] ?? '');
+      if (
+        !passesNumericBound(
+          r.historicalPe,
+          minHistoricalPe,
+          columnBoundModes['extra:historicalPe'] ?? 'min',
+        )
+      ) {
+        return false;
+      }
       const minBitsDownside = parseMinInput(columnMins['extra:bitsDownsideRisk'] ?? '');
       if (
         !passesNumericBound(
@@ -1509,6 +1743,13 @@ export default function MetricsComparePage() {
       if (sortKey === 'ticker') return a.ticker.localeCompare(b.ticker) * dir;
       if (sortKey === 'lastPrice') return nullLast(a.lastPrice, b.lastPrice);
       if (sortKey === 'impliedCagr') return nullLast(a.impliedCagr, b.impliedCagr);
+      if (sortKey === 'pegFwd') return nullLast(a.pegFwd, b.pegFwd);
+      if (sortKey === 'fwdPe') return nullLast(a.fwdPe, b.fwdPe);
+      if (sortKey === 'pegAdjustedEarnings')
+        return nullLast(a.pegAdjustedEarnings, b.pegAdjustedEarnings);
+      if (sortKey === 'peg2YrFwdEpsGrowth')
+        return nullLast(a.peg2YrFwdEpsGrowth, b.peg2YrFwdEpsGrowth);
+      if (sortKey === 'historicalPe') return nullLast(a.historicalPe, b.historicalPe);
       if (sortKey === 'bitsDownsideRisk') return nullLast(a.bitsDownsideRisk, b.bitsDownsideRisk);
       if (sortKey === 'bitsToVcaTenYearCagr') return nullLast(a.bitsToVcaTenYearCagr, b.bitsToVcaTenYearCagr);
       if (sortKey === 'avg') return nullLast(avgOfScores(a.scores), avgOfScores(b.scores));
@@ -1635,7 +1876,7 @@ export default function MetricsComparePage() {
 
   const scoreColumnCount = showWeightedScores ? SCORE_TYPES.length + 2 : 0;
   const bitsDerivedColCount = showBitsDerived ? 2 : 0;
-  const tableColSpan = 5 + bitsDerivedColCount + metricColumns.length + scoreColumnCount;
+  const tableColSpan = 10 + bitsDerivedColCount + metricColumns.length + scoreColumnCount;
   const impliedCagrClass = (v: number | null | undefined) =>
     metricToneClassBySemanticType(v, 'Implied 10Y CAGR % (VCA)', 'implied_cagr_percent_vca');
   const bitsDownsideRiskClass = (v: number | null | undefined) =>
@@ -2108,6 +2349,41 @@ export default function MetricsComparePage() {
                   >
                     Implied 10Y CAGR % (VCA){arrow('impliedCagr')}
                   </th>
+                  <th
+                    className="metric-col metrics-th-tip"
+                    title={METRICS_TH_TIP_PEG_FWD}
+                    onClick={() => toggleSort('pegFwd')}
+                  >
+                    PEG (fwd){arrow('pegFwd')}
+                  </th>
+                  <th
+                    className="metric-col metrics-th-tip"
+                    title={METRICS_TH_TIP_FWD_PE}
+                    onClick={() => toggleSort('fwdPe')}
+                  >
+                    Fwd PE{arrow('fwdPe')}
+                  </th>
+                  <th
+                    className="metric-col metrics-th-tip"
+                    title={METRICS_TH_TIP_PEG_ADJUSTED_EARNINGS}
+                    onClick={() => toggleSort('pegAdjustedEarnings')}
+                  >
+                    PEG (Adjusted Earnings){arrow('pegAdjustedEarnings')}
+                  </th>
+                  <th
+                    className="metric-col metrics-th-tip"
+                    title={METRICS_TH_TIP_PEG_2YR_FWD_EPS_GROWTH}
+                    onClick={() => toggleSort('peg2YrFwdEpsGrowth')}
+                  >
+                    PEG (2 Yr Fwd EPS growth){arrow('peg2YrFwdEpsGrowth')}
+                  </th>
+                  <th
+                    className="metric-col metrics-th-tip"
+                    title={METRICS_TH_TIP_HISTORICAL_PE}
+                    onClick={() => toggleSort('historicalPe')}
+                  >
+                    Historical PE{arrow('historicalPe')}
+                  </th>
                   {showBitsDerived && (
                     <th
                       className="metric-col metrics-th-tip"
@@ -2214,6 +2490,51 @@ export default function MetricsComparePage() {
                       value={columnMins['extra:impliedCagr'] ?? ''}
                       onValueChange={v => setMin('extra:impliedCagr', v)}
                       filterAriaLabel="Implied 10Y CAGR filter"
+                    />
+                  </th>
+                  <th className="filter-header-cell">
+                    <ColumnMinFilterCell
+                      mode={columnBoundModes['extra:pegFwd'] ?? 'min'}
+                      onModeChange={m => setBoundMode('extra:pegFwd', m)}
+                      value={columnMins['extra:pegFwd'] ?? ''}
+                      onValueChange={v => setMin('extra:pegFwd', v)}
+                      filterAriaLabel="PEG forward filter"
+                    />
+                  </th>
+                  <th className="filter-header-cell">
+                    <ColumnMinFilterCell
+                      mode={columnBoundModes['extra:fwdPe'] ?? 'min'}
+                      onModeChange={m => setBoundMode('extra:fwdPe', m)}
+                      value={columnMins['extra:fwdPe'] ?? ''}
+                      onValueChange={v => setMin('extra:fwdPe', v)}
+                      filterAriaLabel="Forward PE filter"
+                    />
+                  </th>
+                  <th className="filter-header-cell">
+                    <ColumnMinFilterCell
+                      mode={columnBoundModes['extra:pegAdjustedEarnings'] ?? 'min'}
+                      onModeChange={m => setBoundMode('extra:pegAdjustedEarnings', m)}
+                      value={columnMins['extra:pegAdjustedEarnings'] ?? ''}
+                      onValueChange={v => setMin('extra:pegAdjustedEarnings', v)}
+                      filterAriaLabel="PEG adjusted earnings filter"
+                    />
+                  </th>
+                  <th className="filter-header-cell">
+                    <ColumnMinFilterCell
+                      mode={columnBoundModes['extra:peg2YrFwdEpsGrowth'] ?? 'min'}
+                      onModeChange={m => setBoundMode('extra:peg2YrFwdEpsGrowth', m)}
+                      value={columnMins['extra:peg2YrFwdEpsGrowth'] ?? ''}
+                      onValueChange={v => setMin('extra:peg2YrFwdEpsGrowth', v)}
+                      filterAriaLabel="PEG 2 year forward EPS growth filter"
+                    />
+                  </th>
+                  <th className="filter-header-cell">
+                    <ColumnMinFilterCell
+                      mode={columnBoundModes['extra:historicalPe'] ?? 'min'}
+                      onModeChange={m => setBoundMode('extra:historicalPe', m)}
+                      value={columnMins['extra:historicalPe'] ?? ''}
+                      onValueChange={v => setMin('extra:historicalPe', v)}
+                      filterAriaLabel="Historical PE filter"
                     />
                   </th>
                   {showBitsDerived && (
@@ -2396,6 +2717,21 @@ export default function MetricsComparePage() {
                           quotesLoading && r.lastPrice == null,
                           vcaRunsLoading,
                         )}
+                      </td>
+                      <td className={`metric-cell ${pegToneClass(r.pegFwd)}`}>
+                        {fmtMetric(r.pegFwd ?? undefined)}
+                      </td>
+                      <td className={`metric-cell ${peToneClass(r.fwdPe)}`}>
+                        {fmtMetric(r.fwdPe ?? undefined)}
+                      </td>
+                      <td className={`metric-cell ${pegToneClass(r.pegAdjustedEarnings)}`}>
+                        {fmtMetric(r.pegAdjustedEarnings ?? undefined)}
+                      </td>
+                      <td className={`metric-cell ${pegToneClass(r.peg2YrFwdEpsGrowth)}`}>
+                        {fmtMetric(r.peg2YrFwdEpsGrowth ?? undefined)}
+                      </td>
+                      <td className={`metric-cell ${peToneClass(r.historicalPe)}`}>
+                        {fmtMetric(r.historicalPe ?? undefined)}
                       </td>
                       {showBitsDerived && (
                         <td className={`metric-cell ${bitsDownsideRiskClass(r.bitsDownsideRisk)}`}>
