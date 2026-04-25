@@ -8,6 +8,7 @@ import GemDetailPage from './pages/GemDetailPage';
 import ScoresPage from './pages/ScoresPage';
 import PositionSizingPage from './pages/PositionSizingPage';
 import MetricsComparePage from './pages/MetricsComparePage';
+import CompanyEntryPricingPage from './pages/CompanyEntryPricingPage';
 import Layout from './components/Layout';
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
@@ -42,6 +43,11 @@ export default function App() {
           <Layout><CompanyDetailPage /></Layout>
         </ProtectedRoute>
       } />
+      <Route path="/company/:companyId/entry-pricing" element={
+        <ProtectedRoute>
+          <Layout><CompanyEntryPricingPage /></Layout>
+        </ProtectedRoute>
+      } />
       <Route path="/gem/:gemId" element={
         <ProtectedRoute>
           <Layout><GemDetailPage /></Layout>
@@ -55,6 +61,11 @@ export default function App() {
       <Route path="/position-sizing" element={
         <ProtectedRoute>
           <Layout><PositionSizingPage /></Layout>
+        </ProtectedRoute>
+      } />
+      <Route path="/entry-pricing" element={
+        <ProtectedRoute>
+          <Layout><CompanyEntryPricingPage /></Layout>
         </ProtectedRoute>
       } />
       <Route path="/metrics" element={

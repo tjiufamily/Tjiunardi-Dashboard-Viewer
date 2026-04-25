@@ -1,3 +1,139 @@
+.entry-pricing-page {
+  display: grid;
+  gap: 16px;
+}
+
+.entry-pricing-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.entry-pricing-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.entry-pricing-subtitle {
+  margin: 4px 0 0;
+  color: var(--muted, #93a4c3);
+}
+
+.entry-pricing-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.entry-kpi-card {
+  border: 1px solid rgba(142, 164, 217, 0.25);
+  background: rgba(10, 20, 48, 0.45);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 4px;
+}
+
+.entry-kpi-card span {
+  color: #9ab0d6;
+  font-size: 12px;
+}
+
+.entry-kpi-card strong {
+  font-size: 16px;
+  color: #dce7ff;
+}
+
+.entry-pricing-panel {
+  border: 1px solid rgba(142, 164, 217, 0.2);
+  border-radius: 12px;
+  background: rgba(8, 16, 38, 0.45);
+  padding: 12px;
+}
+
+.entry-pricing-panel h3 {
+  margin: 0 0 8px;
+}
+
+.entry-pricing-caption {
+  margin: 0 0 10px;
+  color: #9ab0d6;
+  font-size: 12px;
+}
+
+.entry-pricing-table-wrap {
+  overflow: auto;
+}
+
+.entry-pricing-table th,
+.entry-pricing-table td {
+  white-space: nowrap;
+}
+
+.entry-pricing-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.entry-pricing-grid--triple {
+  grid-template-columns: repeat(3, minmax(260px, 1fr));
+  align-items: start;
+}
+
+.entry-pricing-grid.entry-pricing-grid--triple {
+  overflow-x: auto;
+}
+
+.entry-mini-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.entry-mini-table th,
+.entry-mini-table td {
+  border-bottom: 1px solid rgba(142, 164, 217, 0.16);
+  padding: 8px 6px;
+}
+
+.entry-mini-table th {
+  text-align: left;
+  color: #9ab0d6;
+  font-weight: 500;
+}
+
+.entry-mini-table td {
+  text-align: right;
+  color: #dce7ff;
+  font-weight: 600;
+}
+
+@media (max-width: 960px) {
+  .entry-pricing-grid {
+    grid-template-columns: 1fr;
+  }
+  .entry-pricing-grid.entry-pricing-grid--triple {
+    grid-template-columns: repeat(3, minmax(220px, 1fr));
+  }
+  .entry-pricing-header {
+    flex-direction: column;
+  }
+  .entry-pricing-header-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 1280px) and (min-width: 961px) {
+  .entry-pricing-grid--triple {
+    grid-template-columns: repeat(3, minmax(220px, 1fr));
+  }
+}
+
 /* ===================================================================
    Tjiunardi Dashboard Viewer — Global Stylesheet
    Professional dark theme, fully responsive

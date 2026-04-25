@@ -176,6 +176,15 @@ function fmtCachedQuoteTime(ts: number | null): string | null {
   return `${ageLabel} (${new Date(ts).toLocaleString()})`;
 }
 
+function isAdjustedOperatingEarningsGrowthRateMetric(label: string, storageKey: string): boolean {
+  const s = `${label} ${storageKey}`.toLowerCase().replace(/\s+/g, ' ');
+  const hasAdjusted = /\badjusted\b|\badj\b/.test(s);
+  const hasEarnings = /\bearnings\b|\beps\b/.test(s);
+  const hasGrowth = /\bgrowth\b|\brate\b|%|percent|pct/.test(s);
+  const hasOperating = /\boperating\b/.test(s);
+  return hasAdjusted && hasEarnings && hasGrowth && (hasOperating || /adj.*earn.*growth/.test(s));
+}
+
 /** Value the "Implied" preset applies (implied CAGR, or fallback chain). */
 function effectiveImpliedCagr(opts: ReturnType<typeof valueCompoundingCagrOptionsFromRun>): number | null {
   if (opts.impliedTenYearCagrPercent != null) return opts.impliedTenYearCagrPercent;
@@ -292,6 +301,19 @@ export default function PositionSizingPage() {
       effectiveCurrentPrice != null && effectiveCurrentPrice > 0 ? effectiveCurrentPrice : null;
     return valueCompoundingCagrOptionsFromRun(vcaGem, latestVcaRun, px);
   }, [vcaGem, latestVcaRun, effectiveCurrentPrice]);
+  const adjustedOperatingEarningsGrowthRate = useMemo(() => {
+    if (!selectedCompanyId || companyRuns.length === 0 || gems.length === 0) return null;
+    for (const gem of gems) {
+      const run = latestRunForGem(companyRuns, gem.id);
+      if (!run?.captured_metrics) continue;
+      const keys = metricStorageKeysForGem(gem, [run]);
+      const key = keys.find(k => isAdjustedOperatingEarningsGrowthRateMetric(labelForMetricKey(gem, k), k));
+      if (!key) continue;
+      const v = run.captured_metrics[key];
+      if (typeof v === 'number' && Number.isFinite(v)) return v;
+    }
+    return null;
+  }, [selectedCompanyId, companyRuns, gems]);
 
   const { bitsTargetPrice, latestBitsRun } = useMemo(() => {
     if (!selectedCompanyId || bitsGems.length === 0)
@@ -902,11 +924,26 @@ export default function PositionSizingPage() {
           vcaOpts.tenYearTotalCagr ??
           vcaOpts.fiveYearValueCompounding;
       }
-      if (v != null) setCagr(Number(v.toFixed(4)).toString());
-      else setCagr('');
+      if (v != null) {
+        const next = Number(v.toFixed(4)).toString();
+        setCagr(next);
+        syncTenYearTargetFromCagrInput(next);
+      } else {
+        setCagr('');
+      }
     },
-    [vcaOpts, effectiveImpliedTenYearCagrPercent],
+    [vcaOpts, effectiveImpliedTenYearCagrPercent, syncTenYearTargetFromCagrInput],
   );
+  const applyAdjustedOperatingGrowthPreset = useCallback(() => {
+    if (adjustedOperatingEarningsGrowthRate == null || !Number.isFinite(adjustedOperatingEarningsGrowthRate)) {
+      return;
+    }
+    const next = Number(adjustedOperatingEarningsGrowthRate.toFixed(4)).toString();
+    setCagrSource('custom');
+    setCagr(next);
+    // Keep target-price slider aligned when user applies this quick-fill value.
+    syncTenYearTargetFromCagrInput(next);
+  }, [adjustedOperatingEarningsGrowthRate, syncTenYearTargetFromCagrInput]);
 
   const handleCompanyChange = (id: string) => {
     setSelectedCompanyId(id);
@@ -1335,6 +1372,15 @@ export default function PositionSizingPage() {
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => navigate(returnToSafe)}>
               {backLabelForReturnTo(returnToSafe)}
             </button>
+            {selectedCompanyId ? (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => navigate(`/entry-pricing?company=${encodeURIComponent(selectedCompanyId)}`)}
+              >
+                Open Entry Pricing
+              </button>
+            ) : null}
             {!searchParams.get('cagr') && returnToSafe.startsWith('/scores') ? (
               <span className="sizing-return-hint">
                 CAGR and prices use the same rules as a direct open: implied from VCA when available; manual last prices
@@ -1361,15 +1407,29 @@ export default function PositionSizingPage() {
         <div className="sizing-field sizing-field--company">
           <div className="sizing-company-label-row">
             <label>Company</label>
-            <button
-              type="button"
-              className="btn btn-sm btn-ghost sizing-favourite-save-btn"
-              disabled={!selectedCompanyId}
-              onClick={handleSaveFavourite}
-              title={selectedCompanyId ? 'Save current company settings as favourite' : 'Select a company first'}
-            >
-              {selectedIsFavourite ? 'Update Favourite' : 'Make Favourite'}
-            </button>
+            <div className="sizing-company-label-actions">
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost sizing-favourite-save-btn"
+                disabled={!selectedCompanyId}
+                onClick={handleSaveFavourite}
+                title={selectedCompanyId ? 'Save current company settings as favourite' : 'Select a company first'}
+              >
+                {selectedIsFavourite ? 'Update Favourite' : 'Make Favourite'}
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                disabled={!selectedCompanyId}
+                onClick={() => {
+                  if (!selectedCompanyId) return;
+                  navigate(`/entry-pricing?company=${encodeURIComponent(selectedCompanyId)}`);
+                }}
+                title={selectedCompanyId ? 'Open Entry Pricing for selected company' : 'Select a company first'}
+              >
+                Open Entry Pricing
+              </button>
+            </div>
           </div>
           <input
             type="search"
@@ -1623,6 +1683,15 @@ export default function PositionSizingPage() {
                 >
                   <span className="sizing-cagr-chip-title">5 Y value compounding</span>
                   <span className="sizing-cagr-chip-value">{fmtPct(vcaOpts.fiveYearValueCompounding)}</span>
+                </button>
+                <button
+                  type="button"
+                  className={`sizing-cagr-chip ${cagrSource === 'custom' ? 'active' : ''}`}
+                  disabled={adjustedOperatingEarningsGrowthRate == null}
+                  onClick={applyAdjustedOperatingGrowthPreset}
+                >
+                  <span className="sizing-cagr-chip-title">Adjusted operating earnings growth %</span>
+                  <span className="sizing-cagr-chip-value">{fmtPct(adjustedOperatingEarningsGrowthRate)}</span>
                 </button>
               </div>
             ) : selectedCompanyId && !gemsLoading ? (

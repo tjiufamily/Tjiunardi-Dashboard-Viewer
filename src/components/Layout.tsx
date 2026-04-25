@@ -12,6 +12,7 @@ export default function Layout({ children }: PropsWithChildren) {
     { path: '/scores', label: 'Scorecard' },
     { path: '/metrics', label: 'Gem metrics' },
     { path: '/position-sizing', label: 'Position Sizing' },
+    { path: '/entry-pricing', label: 'Entry Pricing' },
   ];
 
   return (

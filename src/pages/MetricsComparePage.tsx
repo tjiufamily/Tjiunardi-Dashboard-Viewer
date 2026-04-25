@@ -416,6 +416,7 @@ function isCagrLikeMetric(label: string, storageKey: string): boolean {
 function isBuyPriceVsLastPriceMetric(label: string, storageKey: string): boolean {
   const s = `${label} ${storageKey}`.toLowerCase().replace(/\s+/g, ' ');
   const k = storageKey.toLowerCase();
+  if (/\bvaluation\s+of\b/.test(s)) return false;
 
   // "Low X Growth Desired Buy Price" (label + capture key variants)
   if (
@@ -439,6 +440,14 @@ function isBuyPriceVsLastPriceMetric(label: string, storageKey: string): boolean
   return false;
 }
 
+function isForwardPriceValuationMetric(label: string, storageKey: string): boolean {
+  const s = `${label} ${storageKey}`.toLowerCase().replace(/\s+/g, ' ');
+  const hasValuation = /\bvaluation\b/.test(s);
+  const hasForward = /\b(fwd|forward)\b/.test(s);
+  const hasBloodOrMos = /\bblood\s+in\s+the\s+streets\b/.test(s) || /\bbuy\s+price\b/.test(s);
+  return hasValuation && hasForward && hasBloodOrMos;
+}
+
 function metricToneClassBySemanticType(
   value: number | null | undefined,
   label: string,
@@ -454,7 +463,11 @@ function metricToneClassBySemanticType(
     return '';
   }
 
-  if (isValuationLowXGrowthMetric(label, storageKey) || isTargetPeMetric(label, storageKey)) {
+  if (
+    isValuationLowXGrowthMetric(label, storageKey) ||
+    isTargetPeMetric(label, storageKey) ||
+    isForwardPriceValuationMetric(label, storageKey)
+  ) {
     // Target P/E (and valuation P/E-style columns): neutral bands, not good-vs-bad.
     return targetPeStyleToneClass(value);
   }
@@ -485,6 +498,14 @@ type Row = {
   scores: Partial<Record<ScoreType, number>>;
   rawScores: Partial<Record<ScoreType, number>>;
   metrics: Record<string, number>;
+};
+
+type MetricColumn = {
+  id: string;
+  gemId: string;
+  key: string;
+  label: string;
+  sourceMetricColId?: string;
 };
 
 type EnrichedRow = Row & {
@@ -733,7 +754,7 @@ export default function MetricsComparePage() {
     return m;
   }, [selectedGems, selectedRunsByGem]);
   const metricColumns = useMemo(() => {
-    const cols: Array<{ id: string; gemId: string; key: string; label: string }> = [];
+    const cols: MetricColumn[] = [];
     for (const g of selectedGems) {
       const runsForGem = selectedRunsByGem.get(g.id) ?? [];
       const keys = metricStorageKeysForGem(g, runsForGem);
@@ -748,14 +769,52 @@ export default function MetricsComparePage() {
     }
     return cols;
   }, [selectedGems, selectedRunsByGem]);
+  const valuationDerivedColumns = useMemo(() => {
+    const out: MetricColumn[] = [];
+    for (const col of metricColumns) {
+      const t = normalizedMetricsText(col.label, col.key);
+      let derivedLabel: string | null = null;
+      if (/\bblood in the streets\b/.test(t) && /\btarget\b/.test(t) && /\bprice\b/.test(t)) {
+        derivedLabel = 'Valuation of Blood in the Streets target price (Fwd)';
+      } else if (/\bbuy price\b/.test(t) && /\b20\b/.test(t) && /\bmos\b/.test(t)) {
+        derivedLabel = 'Valuation of Buy Price 20% MOS (Fwd)';
+      } else if (/\bbuy price\b/.test(t) && /\b30\b/.test(t) && /\bmos\b/.test(t)) {
+        derivedLabel = 'Valuation of Buy Price 30% MOS (Fwd)';
+      }
+      if (!derivedLabel) continue;
+      out.push({
+        id: `${col.id}${METRIC_COL_ID_SEP}valuation_fwd`,
+        gemId: col.gemId,
+        key: `${col.key}_valuation_fwd`,
+        label: derivedLabel,
+        sourceMetricColId: col.id,
+      });
+    }
+    return out;
+  }, [metricColumns]);
+  const metricColumnsToDisplay = useMemo(() => {
+    if (valuationDerivedColumns.length === 0) return metricColumns;
+    const bySource = new Map<string, MetricColumn[]>();
+    for (const d of valuationDerivedColumns) {
+      const sourceId = d.sourceMetricColId;
+      if (!sourceId) continue;
+      const existing = bySource.get(sourceId);
+      if (existing) existing.push(d);
+      else bySource.set(sourceId, [d]);
+    }
+    return metricColumns.flatMap(col => {
+      const derived = bySource.get(col.id);
+      return derived && derived.length > 0 ? [col, ...derived] : [col];
+    });
+  }, [metricColumns, valuationDerivedColumns]);
 
   /** Min/max filters do not apply to buy-target vs last-price columns (those use Green/White tone filters). */
   const metricColumnIdsForNumericBounds = useMemo(
     () =>
-      metricColumns
+      metricColumnsToDisplay
         .filter(col => !isBuyPriceVsLastPriceMetric(col.label, col.key))
         .map(c => c.id),
-    [metricColumns],
+    [metricColumnsToDisplay],
   );
 
   const findMetricFilterKeyByLabel = useCallback(
@@ -1227,12 +1286,12 @@ export default function MetricsComparePage() {
 
   const metricExportHeaders = useMemo(
     () =>
-      metricColumns.map(col =>
+      metricColumnsToDisplay.map(col =>
         selectedGemIds.length > 1
           ? `${col.label} (${gemShortLabelById.get(col.gemId) ?? col.gemId})`
           : col.label,
       ),
-    [metricColumns, selectedGemIds.length, gemShortLabelById],
+    [metricColumnsToDisplay, selectedGemIds.length, gemShortLabelById],
   );
 
   const rows: Row[] = useMemo(() => {
@@ -1354,6 +1413,14 @@ export default function MetricsComparePage() {
     }
     return undefined;
   }, [bitsSelectedGems, bitsAllRuns]);
+  const showFundamentalDerived = useMemo(
+    () =>
+      selectedGems.some(g => {
+        const n = (g.name ?? '').toLowerCase();
+        return /compare\s*fundamental\s*jt/.test(n) || /fundamental\s*jt\s*v?3/.test(n);
+      }),
+    [selectedGems],
+  );
   const showBitsDerived = bitsSelectedGems.length > 0;
   const vcaRunsLoading = allRunsLoading || gemsLoading;
   const forwardEpsMetricColId = useMemo(() => {
@@ -1419,7 +1486,7 @@ export default function MetricsComparePage() {
       ro.disconnect();
       window.removeEventListener('resize', update);
     };
-  }, [showWeightedScores, selectedGemIds.length, metricColumns.length, showBitsDerived]);
+  }, [showWeightedScores, selectedGemIds.length, metricColumnsToDisplay.length, showBitsDerived]);
 
   const enrichedRows: EnrichedRow[] = useMemo(() => {
     return rows.map(r => {
@@ -1530,8 +1597,19 @@ export default function MetricsComparePage() {
           : null;
       const bitsTargetPrice =
         typeof bitsTarget === 'number' && bitsTarget > 0 && Number.isFinite(bitsTarget) ? bitsTarget : null;
+      const metrics = { ...r.metrics };
+      if (typeof forwardEps === 'number' && Number.isFinite(forwardEps) && forwardEps !== 0) {
+        for (const derivedCol of valuationDerivedColumns) {
+          if (!derivedCol.sourceMetricColId) continue;
+          const sourceValue = r.metrics[derivedCol.sourceMetricColId];
+          if (typeof sourceValue === 'number' && Number.isFinite(sourceValue)) {
+            metrics[derivedCol.id] = sourceValue / forwardEps;
+          }
+        }
+      }
       return {
         ...r,
+        metrics,
         lastPrice,
         cachedQuoteLabel,
         impliedCagr,
@@ -1559,6 +1637,7 @@ export default function MetricsComparePage() {
     adjustedOperatingEarningsGrowthRateMetricColId,
     twoYearForwardEpsGrowthMetricColId,
     refreshClock,
+    valuationDerivedColumns,
   ]);
 
   const displayedPriceCount = useMemo(
@@ -1594,6 +1673,16 @@ export default function MetricsComparePage() {
       return buildPositionSizingHref({ companyId: r.companyId, returnTo });
     },
     [primarySelectedGem, selectedRunsByGem, returnTo],
+  );
+  const buildEntryPricingUrl = useCallback(
+    (companyId: string) => {
+      const sp = new URLSearchParams();
+      sp.set('company', companyId);
+      for (const id of selectedGemIds) sp.append(GEM_PARAM, id);
+      const qs = sp.toString();
+      return `/entry-pricing${qs ? `?${qs}` : ''}`;
+    },
+    [selectedGemIds],
   );
 
   const toggleSort = (key: SortKey) => {
@@ -1657,55 +1746,57 @@ export default function MetricsComparePage() {
       ) {
         return false;
       }
-      const minPegFwd = parseMinInput(columnMins['extra:pegFwd'] ?? '');
-      if (
-        !passesNumericBound(
-          r.pegFwd,
-          minPegFwd,
-          columnBoundModes['extra:pegFwd'] ?? 'min',
-        )
-      ) {
-        return false;
-      }
-      const minFwdPe = parseMinInput(columnMins['extra:fwdPe'] ?? '');
-      if (
-        !passesNumericBound(
-          r.fwdPe,
-          minFwdPe,
-          columnBoundModes['extra:fwdPe'] ?? 'min',
-        )
-      ) {
-        return false;
-      }
-      const minPegAdjustedEarnings = parseMinInput(columnMins['extra:pegAdjustedEarnings'] ?? '');
-      if (
-        !passesNumericBound(
-          r.pegAdjustedEarnings,
-          minPegAdjustedEarnings,
-          columnBoundModes['extra:pegAdjustedEarnings'] ?? 'min',
-        )
-      ) {
-        return false;
-      }
-      const minPeg2YrFwdEpsGrowth = parseMinInput(columnMins['extra:peg2YrFwdEpsGrowth'] ?? '');
-      if (
-        !passesNumericBound(
-          r.peg2YrFwdEpsGrowth,
-          minPeg2YrFwdEpsGrowth,
-          columnBoundModes['extra:peg2YrFwdEpsGrowth'] ?? 'min',
-        )
-      ) {
-        return false;
-      }
-      const minHistoricalPe = parseMinInput(columnMins['extra:historicalPe'] ?? '');
-      if (
-        !passesNumericBound(
-          r.historicalPe,
-          minHistoricalPe,
-          columnBoundModes['extra:historicalPe'] ?? 'min',
-        )
-      ) {
-        return false;
+      if (showFundamentalDerived) {
+        const minPegFwd = parseMinInput(columnMins['extra:pegFwd'] ?? '');
+        if (
+          !passesNumericBound(
+            r.pegFwd,
+            minPegFwd,
+            columnBoundModes['extra:pegFwd'] ?? 'min',
+          )
+        ) {
+          return false;
+        }
+        const minFwdPe = parseMinInput(columnMins['extra:fwdPe'] ?? '');
+        if (
+          !passesNumericBound(
+            r.fwdPe,
+            minFwdPe,
+            columnBoundModes['extra:fwdPe'] ?? 'min',
+          )
+        ) {
+          return false;
+        }
+        const minPegAdjustedEarnings = parseMinInput(columnMins['extra:pegAdjustedEarnings'] ?? '');
+        if (
+          !passesNumericBound(
+            r.pegAdjustedEarnings,
+            minPegAdjustedEarnings,
+            columnBoundModes['extra:pegAdjustedEarnings'] ?? 'min',
+          )
+        ) {
+          return false;
+        }
+        const minPeg2YrFwdEpsGrowth = parseMinInput(columnMins['extra:peg2YrFwdEpsGrowth'] ?? '');
+        if (
+          !passesNumericBound(
+            r.peg2YrFwdEpsGrowth,
+            minPeg2YrFwdEpsGrowth,
+            columnBoundModes['extra:peg2YrFwdEpsGrowth'] ?? 'min',
+          )
+        ) {
+          return false;
+        }
+        const minHistoricalPe = parseMinInput(columnMins['extra:historicalPe'] ?? '');
+        if (
+          !passesNumericBound(
+            r.historicalPe,
+            minHistoricalPe,
+            columnBoundModes['extra:historicalPe'] ?? 'min',
+          )
+        ) {
+          return false;
+        }
       }
       const minBitsDownside = parseMinInput(columnMins['extra:bitsDownsideRisk'] ?? '');
       if (
@@ -1787,8 +1878,9 @@ export default function MetricsComparePage() {
         : 'no-preset';
     const csv = buildMetricsLandscapeCSV({
       rows: filteredSorted,
-      metricColumnIds: metricColumns.map(c => c.id),
+      metricColumnIds: metricColumnsToDisplay.map(c => c.id),
       metricColumnHeaders: metricExportHeaders,
+      showFundamentalDerived,
       showBitsDerived,
       showWeightedScores,
       csvMeta: {
@@ -1801,8 +1893,9 @@ export default function MetricsComparePage() {
     downloadTextFile(metricsLandscapeFilename({ presetSlug }), csv, 'text/csv;charset=utf-8');
   }, [
     filteredSorted,
-    metricColumns,
+    metricColumnsToDisplay,
     metricExportHeaders,
+    showFundamentalDerived,
     showBitsDerived,
     showWeightedScores,
     activePresetId,
@@ -1875,8 +1968,10 @@ export default function MetricsComparePage() {
     companiesLoading || gemsLoading || allRunsLoading || scoresLoading;
 
   const scoreColumnCount = showWeightedScores ? SCORE_TYPES.length + 2 : 0;
+  const fundamentalDerivedColCount = showFundamentalDerived ? 5 : 0;
   const bitsDerivedColCount = showBitsDerived ? 2 : 0;
-  const tableColSpan = 10 + bitsDerivedColCount + metricColumns.length + scoreColumnCount;
+  const tableColSpan =
+    5 + fundamentalDerivedColCount + bitsDerivedColCount + metricColumnsToDisplay.length + scoreColumnCount;
   const impliedCagrClass = (v: number | null | undefined) =>
     metricToneClassBySemanticType(v, 'Implied 10Y CAGR % (VCA)', 'implied_cagr_percent_vca');
   const bitsDownsideRiskClass = (v: number | null | undefined) =>
@@ -2321,7 +2416,7 @@ export default function MetricsComparePage() {
         </div>
       ) : (
         <>
-          {metricColumns.length === 0 && (
+          {metricColumnsToDisplay.length === 0 && (
             <p className="metrics-no-keys-hint">
               No metric keys found in capture config or runs. Weighted scores still show when available.
             </p>
@@ -2334,7 +2429,7 @@ export default function MetricsComparePage() {
                   <th className="sticky-after-action" onClick={() => toggleSort('name')}>
                     Company{arrow('name')}
                   </th>
-                  <th onClick={() => toggleSort('ticker')}>Ticker{arrow('ticker')}</th>
+                  <th onClick={() => toggleSort('ticker')}>Ticket entry price{arrow('ticker')}</th>
                   <th
                     className="metric-col metrics-th-tip"
                     title={METRICS_TH_TIP_LAST_PRICE}
@@ -2349,41 +2444,51 @@ export default function MetricsComparePage() {
                   >
                     Implied 10Y CAGR % (VCA){arrow('impliedCagr')}
                   </th>
-                  <th
-                    className="metric-col metrics-th-tip"
-                    title={METRICS_TH_TIP_PEG_FWD}
-                    onClick={() => toggleSort('pegFwd')}
-                  >
-                    PEG (fwd){arrow('pegFwd')}
-                  </th>
-                  <th
-                    className="metric-col metrics-th-tip"
-                    title={METRICS_TH_TIP_FWD_PE}
-                    onClick={() => toggleSort('fwdPe')}
-                  >
-                    Fwd PE{arrow('fwdPe')}
-                  </th>
-                  <th
-                    className="metric-col metrics-th-tip"
-                    title={METRICS_TH_TIP_PEG_ADJUSTED_EARNINGS}
-                    onClick={() => toggleSort('pegAdjustedEarnings')}
-                  >
-                    PEG (Adjusted Earnings){arrow('pegAdjustedEarnings')}
-                  </th>
-                  <th
-                    className="metric-col metrics-th-tip"
-                    title={METRICS_TH_TIP_PEG_2YR_FWD_EPS_GROWTH}
-                    onClick={() => toggleSort('peg2YrFwdEpsGrowth')}
-                  >
-                    PEG (2 Yr Fwd EPS growth){arrow('peg2YrFwdEpsGrowth')}
-                  </th>
-                  <th
-                    className="metric-col metrics-th-tip"
-                    title={METRICS_TH_TIP_HISTORICAL_PE}
-                    onClick={() => toggleSort('historicalPe')}
-                  >
-                    Historical PE{arrow('historicalPe')}
-                  </th>
+                  {showFundamentalDerived && (
+                    <th
+                      className="metric-col metrics-th-tip"
+                      title={METRICS_TH_TIP_PEG_FWD}
+                      onClick={() => toggleSort('pegFwd')}
+                    >
+                      PEG (fwd){arrow('pegFwd')}
+                    </th>
+                  )}
+                  {showFundamentalDerived && (
+                    <th
+                      className="metric-col metrics-th-tip"
+                      title={METRICS_TH_TIP_FWD_PE}
+                      onClick={() => toggleSort('fwdPe')}
+                    >
+                      Fwd PE{arrow('fwdPe')}
+                    </th>
+                  )}
+                  {showFundamentalDerived && (
+                    <th
+                      className="metric-col metrics-th-tip"
+                      title={METRICS_TH_TIP_PEG_ADJUSTED_EARNINGS}
+                      onClick={() => toggleSort('pegAdjustedEarnings')}
+                    >
+                      PEG (Adjusted Earnings){arrow('pegAdjustedEarnings')}
+                    </th>
+                  )}
+                  {showFundamentalDerived && (
+                    <th
+                      className="metric-col metrics-th-tip"
+                      title={METRICS_TH_TIP_PEG_2YR_FWD_EPS_GROWTH}
+                      onClick={() => toggleSort('peg2YrFwdEpsGrowth')}
+                    >
+                      PEG (2 Yr Fwd EPS growth){arrow('peg2YrFwdEpsGrowth')}
+                    </th>
+                  )}
+                  {showFundamentalDerived && (
+                    <th
+                      className="metric-col metrics-th-tip"
+                      title={METRICS_TH_TIP_HISTORICAL_PE}
+                      onClick={() => toggleSort('historicalPe')}
+                    >
+                      Historical PE{arrow('historicalPe')}
+                    </th>
+                  )}
                   {showBitsDerived && (
                     <th
                       className="metric-col metrics-th-tip"
@@ -2402,7 +2507,7 @@ export default function MetricsComparePage() {
                       10Y CAGR % (BITS→VCA){arrow('bitsToVcaTenYearCagr')}
                     </th>
                   )}
-                  {metricColumns.map(col => (
+                  {metricColumnsToDisplay.map(col => (
                     <th
                       key={col.id}
                       className="metric-col"
@@ -2492,51 +2597,61 @@ export default function MetricsComparePage() {
                       filterAriaLabel="Implied 10Y CAGR filter"
                     />
                   </th>
-                  <th className="filter-header-cell">
-                    <ColumnMinFilterCell
-                      mode={columnBoundModes['extra:pegFwd'] ?? 'min'}
-                      onModeChange={m => setBoundMode('extra:pegFwd', m)}
-                      value={columnMins['extra:pegFwd'] ?? ''}
-                      onValueChange={v => setMin('extra:pegFwd', v)}
-                      filterAriaLabel="PEG forward filter"
-                    />
-                  </th>
-                  <th className="filter-header-cell">
-                    <ColumnMinFilterCell
-                      mode={columnBoundModes['extra:fwdPe'] ?? 'min'}
-                      onModeChange={m => setBoundMode('extra:fwdPe', m)}
-                      value={columnMins['extra:fwdPe'] ?? ''}
-                      onValueChange={v => setMin('extra:fwdPe', v)}
-                      filterAriaLabel="Forward PE filter"
-                    />
-                  </th>
-                  <th className="filter-header-cell">
-                    <ColumnMinFilterCell
-                      mode={columnBoundModes['extra:pegAdjustedEarnings'] ?? 'min'}
-                      onModeChange={m => setBoundMode('extra:pegAdjustedEarnings', m)}
-                      value={columnMins['extra:pegAdjustedEarnings'] ?? ''}
-                      onValueChange={v => setMin('extra:pegAdjustedEarnings', v)}
-                      filterAriaLabel="PEG adjusted earnings filter"
-                    />
-                  </th>
-                  <th className="filter-header-cell">
-                    <ColumnMinFilterCell
-                      mode={columnBoundModes['extra:peg2YrFwdEpsGrowth'] ?? 'min'}
-                      onModeChange={m => setBoundMode('extra:peg2YrFwdEpsGrowth', m)}
-                      value={columnMins['extra:peg2YrFwdEpsGrowth'] ?? ''}
-                      onValueChange={v => setMin('extra:peg2YrFwdEpsGrowth', v)}
-                      filterAriaLabel="PEG 2 year forward EPS growth filter"
-                    />
-                  </th>
-                  <th className="filter-header-cell">
-                    <ColumnMinFilterCell
-                      mode={columnBoundModes['extra:historicalPe'] ?? 'min'}
-                      onModeChange={m => setBoundMode('extra:historicalPe', m)}
-                      value={columnMins['extra:historicalPe'] ?? ''}
-                      onValueChange={v => setMin('extra:historicalPe', v)}
-                      filterAriaLabel="Historical PE filter"
-                    />
-                  </th>
+                  {showFundamentalDerived && (
+                    <th className="filter-header-cell">
+                      <ColumnMinFilterCell
+                        mode={columnBoundModes['extra:pegFwd'] ?? 'min'}
+                        onModeChange={m => setBoundMode('extra:pegFwd', m)}
+                        value={columnMins['extra:pegFwd'] ?? ''}
+                        onValueChange={v => setMin('extra:pegFwd', v)}
+                        filterAriaLabel="PEG forward filter"
+                      />
+                    </th>
+                  )}
+                  {showFundamentalDerived && (
+                    <th className="filter-header-cell">
+                      <ColumnMinFilterCell
+                        mode={columnBoundModes['extra:fwdPe'] ?? 'min'}
+                        onModeChange={m => setBoundMode('extra:fwdPe', m)}
+                        value={columnMins['extra:fwdPe'] ?? ''}
+                        onValueChange={v => setMin('extra:fwdPe', v)}
+                        filterAriaLabel="Forward PE filter"
+                      />
+                    </th>
+                  )}
+                  {showFundamentalDerived && (
+                    <th className="filter-header-cell">
+                      <ColumnMinFilterCell
+                        mode={columnBoundModes['extra:pegAdjustedEarnings'] ?? 'min'}
+                        onModeChange={m => setBoundMode('extra:pegAdjustedEarnings', m)}
+                        value={columnMins['extra:pegAdjustedEarnings'] ?? ''}
+                        onValueChange={v => setMin('extra:pegAdjustedEarnings', v)}
+                        filterAriaLabel="PEG adjusted earnings filter"
+                      />
+                    </th>
+                  )}
+                  {showFundamentalDerived && (
+                    <th className="filter-header-cell">
+                      <ColumnMinFilterCell
+                        mode={columnBoundModes['extra:peg2YrFwdEpsGrowth'] ?? 'min'}
+                        onModeChange={m => setBoundMode('extra:peg2YrFwdEpsGrowth', m)}
+                        value={columnMins['extra:peg2YrFwdEpsGrowth'] ?? ''}
+                        onValueChange={v => setMin('extra:peg2YrFwdEpsGrowth', v)}
+                        filterAriaLabel="PEG 2 year forward EPS growth filter"
+                      />
+                    </th>
+                  )}
+                  {showFundamentalDerived && (
+                    <th className="filter-header-cell">
+                      <ColumnMinFilterCell
+                        mode={columnBoundModes['extra:historicalPe'] ?? 'min'}
+                        onModeChange={m => setBoundMode('extra:historicalPe', m)}
+                        value={columnMins['extra:historicalPe'] ?? ''}
+                        onValueChange={v => setMin('extra:historicalPe', v)}
+                        filterAriaLabel="Historical PE filter"
+                      />
+                    </th>
+                  )}
                   {showBitsDerived && (
                     <th className="filter-header-cell">
                       <ColumnMinFilterCell
@@ -2559,7 +2674,7 @@ export default function MetricsComparePage() {
                       />
                     </th>
                   )}
-                  {metricColumns.map(col => (
+                  {metricColumnsToDisplay.map(col => (
                     <th key={col.id} className="filter-header-cell">
                       {isBuyPriceVsLastPriceMetric(col.label, col.key) ? (
                         <BuyPriceToneFilterCell
@@ -2668,7 +2783,11 @@ export default function MetricsComparePage() {
                           {r.companyName}
                         </Link>
                       </td>
-                      <td className="ticker-cell">{r.ticker}</td>
+                      <td className="ticker-cell">
+                        <Link className="scores-company-link" to={buildEntryPricingUrl(r.companyId)} state={{ from: returnTo }}>
+                          {r.ticker}
+                        </Link>
+                      </td>
                       <td
                         className={`metric-cell metrics-price-cell${priceOverrides[r.companyId] != null ? ' metrics-price-cell--manual' : ''}`}
                       >
@@ -2718,21 +2837,31 @@ export default function MetricsComparePage() {
                           vcaRunsLoading,
                         )}
                       </td>
-                      <td className={`metric-cell ${pegToneClass(r.pegFwd)}`}>
-                        {fmtMetric(r.pegFwd ?? undefined)}
-                      </td>
-                      <td className={`metric-cell ${peToneClass(r.fwdPe)}`}>
-                        {fmtMetric(r.fwdPe ?? undefined)}
-                      </td>
-                      <td className={`metric-cell ${pegToneClass(r.pegAdjustedEarnings)}`}>
-                        {fmtMetric(r.pegAdjustedEarnings ?? undefined)}
-                      </td>
-                      <td className={`metric-cell ${pegToneClass(r.peg2YrFwdEpsGrowth)}`}>
-                        {fmtMetric(r.peg2YrFwdEpsGrowth ?? undefined)}
-                      </td>
-                      <td className={`metric-cell ${peToneClass(r.historicalPe)}`}>
-                        {fmtMetric(r.historicalPe ?? undefined)}
-                      </td>
+                      {showFundamentalDerived && (
+                        <td className={`metric-cell ${pegToneClass(r.pegFwd)}`}>
+                          {fmtMetric(r.pegFwd ?? undefined)}
+                        </td>
+                      )}
+                      {showFundamentalDerived && (
+                        <td className={`metric-cell ${peToneClass(r.fwdPe)}`}>
+                          {fmtMetric(r.fwdPe ?? undefined)}
+                        </td>
+                      )}
+                      {showFundamentalDerived && (
+                        <td className={`metric-cell ${pegToneClass(r.pegAdjustedEarnings)}`}>
+                          {fmtMetric(r.pegAdjustedEarnings ?? undefined)}
+                        </td>
+                      )}
+                      {showFundamentalDerived && (
+                        <td className={`metric-cell ${pegToneClass(r.peg2YrFwdEpsGrowth)}`}>
+                          {fmtMetric(r.peg2YrFwdEpsGrowth ?? undefined)}
+                        </td>
+                      )}
+                      {showFundamentalDerived && (
+                        <td className={`metric-cell ${peToneClass(r.historicalPe)}`}>
+                          {fmtMetric(r.historicalPe ?? undefined)}
+                        </td>
+                      )}
                       {showBitsDerived && (
                         <td className={`metric-cell ${bitsDownsideRiskClass(r.bitsDownsideRisk)}`}>
                           {fmtImpliedCagrCell(r.bitsDownsideRisk, false, false)}
@@ -2743,7 +2872,7 @@ export default function MetricsComparePage() {
                           {fmtImpliedCagrCell(r.bitsToVcaTenYearCagr, false, false)}
                         </td>
                       )}
-                      {metricColumns.map(col => (
+                      {metricColumnsToDisplay.map(col => (
                         <td
                           key={col.id}
                           className={`metric-cell ${metricToneClassBySemanticType(

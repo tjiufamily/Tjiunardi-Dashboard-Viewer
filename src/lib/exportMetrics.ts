@@ -55,11 +55,20 @@ export function buildMetricsLandscapeCSV(args: {
   rows: MetricsLandscapeRow[];
   metricColumnIds: string[];
   metricColumnHeaders: string[];
+  showFundamentalDerived: boolean;
   showBitsDerived: boolean;
   showWeightedScores: boolean;
   csvMeta?: MetricsCsvExportMeta;
 }): string {
-  const { rows, metricColumnIds, metricColumnHeaders, showBitsDerived, showWeightedScores, csvMeta } = args;
+  const {
+    rows,
+    metricColumnIds,
+    metricColumnHeaders,
+    showFundamentalDerived,
+    showBitsDerived,
+    showWeightedScores,
+    csvMeta,
+  } = args;
 
   const metaLines: string[] = [];
   if (csvMeta) {
@@ -80,12 +89,10 @@ export function buildMetricsLandscapeCSV(args: {
     'Ticker',
     'Last price (delayed)',
     'Implied 10Y CAGR % (VCA)',
-    'PEG (fwd)',
-    'Fwd PE',
-    'PEG (Adjusted Earnings)',
-    'PEG (2 Yr Fwd EPS growth)',
-    'Historical PE',
   ];
+  if (showFundamentalDerived) {
+    headers.push('PEG (fwd)', 'Fwd PE', 'PEG (Adjusted Earnings)', 'PEG (2 Yr Fwd EPS growth)', 'Historical PE');
+  }
   if (showBitsDerived) {
     headers.push('Downside Risk % (BITS)', '10Y CAGR % (BITS→VCA)');
   }
@@ -107,12 +114,16 @@ export function buildMetricsLandscapeCSV(args: {
       r.ticker,
       r.lastPrice != null ? String(r.lastPrice) : '',
       r.impliedCagr != null ? `${r.impliedCagr.toFixed(2)}%` : '',
-      r.pegFwd != null ? r.pegFwd.toFixed(2) : '',
-      r.fwdPe != null ? r.fwdPe.toFixed(2) : '',
-      r.pegAdjustedEarnings != null ? r.pegAdjustedEarnings.toFixed(2) : '',
-      r.peg2YrFwdEpsGrowth != null ? r.peg2YrFwdEpsGrowth.toFixed(2) : '',
-      r.historicalPe != null ? r.historicalPe.toFixed(2) : '',
     ];
+    if (showFundamentalDerived) {
+      cells.push(
+        r.pegFwd != null ? r.pegFwd.toFixed(2) : '',
+        r.fwdPe != null ? r.fwdPe.toFixed(2) : '',
+        r.pegAdjustedEarnings != null ? r.pegAdjustedEarnings.toFixed(2) : '',
+        r.peg2YrFwdEpsGrowth != null ? r.peg2YrFwdEpsGrowth.toFixed(2) : '',
+        r.historicalPe != null ? r.historicalPe.toFixed(2) : '',
+      );
+    }
     if (showBitsDerived) {
       cells.push(
         r.bitsDownsideRisk != null ? `${r.bitsDownsideRisk.toFixed(2)}%` : '',
