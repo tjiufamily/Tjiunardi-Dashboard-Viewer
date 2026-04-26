@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-do
 import { useGems, useCompanyRuns } from '../hooks/useData';
 import { useScoresData } from '../hooks/useScores';
 import { useStockQuotes } from '../hooks/useStockQuotes';
-import { avgOfScores } from '../lib/columnMinFilters';
+import { avgOfSafetyScores, avgOfScores } from '../lib/columnMinFilters';
 import { impliedCagrPercentFromPrices, labelForMetricKey, metricStorageKeysForGem } from '../lib/gemMetrics';
 import { navigateBackWithFallback, readFromState } from '../lib/navigationState';
 import { downloadTextFile, sanitizeFilenamePart, saveTextFileWithPicker } from '../lib/exportPositionSizing';
@@ -24,7 +24,8 @@ import {
   DEFAULT_SCORE_BRACKETS,
 } from '../lib/positionSizing';
 import { normalizeTickerSymbol } from '../lib/stockQuotes';
-import type { CompanyScores, GemRun } from '../types';
+import { QUALITY_SCORE_TYPES, SAFETY_SCORE_TYPES, SCORE_LABELS, SCORE_TYPES } from '../types';
+import type { CompanyScores, GemRun, ScoreType } from '../types';
 
 type MetricPoint = {
   id: string;
@@ -40,6 +41,9 @@ type EntryPricingFavourite = {
   ticker: string;
   savedAt: string;
 };
+type SimulationGrowthSource = 'adjusted_operating' | 'five_y_value' | 'bits_vca' | 'two_y_eps' | 'ten_y_total' | 'custom';
+type SimulationPriceSource = 'market' | 'blood' | 'lowx' | 'mos20' | 'mos30' | 'weighted_scale_in' | 'custom';
+type SimulationEarningsSource = 'current_eps' | 'forward_eps' | 'two_y_fwd_eps' | 'adjusted_earnings' | 'metric' | 'custom';
 const LS_ENTRY_PRICING_FAVOURITES = 'tjiunardi.dashboard.entryPricing.favourites.v1';
 const MAX_FAVOURITES = 7;
 const STAGED_COL_TIP = {
@@ -106,6 +110,15 @@ function isCurrentYearEpsMetric(label: string, storageKey: string): boolean {
 function isTwoYearForwardEpsGrowthMetric(label: string, storageKey: string): boolean {
   const s = normalizedMetricsText(label, storageKey);
   return /\b(forward|fwd)\b/.test(s) && /\beps\b/.test(s) && /\bgrowth|rate|%|percent|pct\b/.test(s) && /\b2\b|\btwo\b/.test(s);
+}
+function isTwoYearForwardEpsMetric(label: string, storageKey: string): boolean {
+  const s = normalizedMetricsText(label, storageKey);
+  return (
+    /\b(forward|fwd)\b/.test(s) &&
+    /\beps\b/.test(s) &&
+    /\b2\b|\btwo\b/.test(s) &&
+    !/\bgrowth|rate|%|percent|pct\b/.test(s)
+  );
 }
 
 function isAdjustedOperatingEarningsGrowthRateMetric(label: string, storageKey: string): boolean {
@@ -204,6 +217,23 @@ function fmtPct(v: number | null | undefined, dp = 2): string {
   if (v == null || Number.isNaN(v)) return '-';
   return `${Number(v.toFixed(dp)).toLocaleString()}%`;
 }
+function clamp(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v));
+}
+function isLikelyPerShareValueMetric(label: string, storageKey: string): boolean {
+  const s = normalizedMetricsText(label, storageKey);
+  if (/\bgrowth|rate|%|percent|pct|margin|target|price|pe|p\/e|cagr|multiple|valuation\b/.test(s)) return false;
+  return /\beps\b|\bfcf\b|\bebit\b|\bowner earnings\b|\boperating earnings\b/.test(s);
+}
+
+function sliderBounds(current: number, fallback: { min: number; max: number }, pad = 0.35): { min: number; max: number } {
+  if (!Number.isFinite(current)) return fallback;
+  const span = Math.max(2, Math.abs(current) * pad);
+  const min = Math.min(fallback.min, current - span);
+  const max = Math.max(fallback.max, current + span);
+  return { min: Number(min.toFixed(2)), max: Number(max.toFixed(2)) };
+}
+
 function entryPricingBaseFilename(ticker: string, companyName: string): string {
   const d = new Date();
   const dateStr = d.toISOString().slice(0, 10);
@@ -239,6 +269,16 @@ export default function CompanyEntryPricingPage() {
     }
     return list;
   }, [companyFilter, companyScores, selectedCompanyId]);
+  const companySearchOptions = useMemo(
+    () =>
+      companyScores.map(c => ({
+        id: c.companyId,
+        companyName: c.companyName,
+        ticker: c.ticker,
+        label: `${c.companyName} (${c.ticker})`,
+      })),
+    [companyScores],
+  );
   const selectedIsFavourite = useMemo(
     () => favourites.some(f => f.companyId === selectedCompanyId),
     [favourites, selectedCompanyId],
@@ -317,6 +357,20 @@ export default function CompanyEntryPricingPage() {
     else next.delete('company');
     setSearchParams(next, { replace: true });
   };
+  const handleCompanyFilterInput = useCallback(
+    (rawValue: string) => {
+      setCompanyFilter(rawValue);
+      const q = rawValue.trim().toLowerCase();
+      if (!q) return;
+      const exact = companySearchOptions.find(
+        c => c.ticker.toLowerCase() === q || c.companyName.toLowerCase() === q || c.label.toLowerCase() === q,
+      );
+      if (exact && exact.id !== selectedCompanyId) {
+        handleCompanyChange(exact.id);
+      }
+    },
+    [companySearchOptions, selectedCompanyId, handleCompanyChange],
+  );
   const handleSaveFavourite = () => {
     if (!company) return;
     const nextFavourite: EntryPricingFavourite = {
@@ -355,16 +409,55 @@ export default function CompanyEntryPricingPage() {
       </Link>
     );
   };
+  const scoreGemIdByType = useMemo(() => {
+    const out = new Map<ScoreType, string>();
+    const sortedRuns = [...runs].sort((a, b) => metricDate(b).localeCompare(metricDate(a)));
+    for (const run of sortedRuns) {
+      const st = run.score_type;
+      if (!st || !SCORE_TYPES.includes(st as ScoreType)) continue;
+      if (!run.gem_id || out.has(st as ScoreType)) continue;
+      out.set(st as ScoreType, run.gem_id);
+    }
+    return out;
+  }, [runs]);
+  const renderScorecardLinkedValue = (text: string, scoreType: ScoreType) => {
+    const gemId = scoreGemIdByType.get(scoreType);
+    if (!gemId) return <>{text}</>;
+    return (
+      <Link className="entry-metric-link" to={`/gem/${encodeURIComponent(gemId)}?company=${encodeURIComponent(selectedCompanyId)}`} state={{ from: returnTo }}>
+        {text}
+      </Link>
+    );
+  };
 
   const forwardEps = byMatcher(isForwardEpsMetric)?.value ?? null;
-  const currentYearEps = byMatcher(isCurrentYearEpsMetric)?.value ?? null;
+  const currentYearEpsMetric = byMatcher(isCurrentYearEpsMetric);
+  const currentYearEps = currentYearEpsMetric?.value ?? null;
   const historicalPe =
     lastPrice != null && currentYearEps != null && currentYearEps !== 0 ? lastPrice / currentYearEps : null;
   const fwdPe = lastPrice != null && forwardEps != null && forwardEps !== 0 ? lastPrice / forwardEps : null;
-  const twoYearFwdEpsGrowth = byMatcher(isTwoYearForwardEpsGrowthMetric)?.value ?? null;
+  const twoYearFwdEpsGrowthMetric = byMatcher(isTwoYearForwardEpsGrowthMetric);
+  const twoYearFwdEpsGrowth = twoYearFwdEpsGrowthMetric?.value ?? null;
+  const twoYearFwdEpsDirect = byMatcher(isTwoYearForwardEpsMetric)?.value ?? null;
+  const twoYearFwdEps =
+    twoYearFwdEpsDirect != null
+      ? twoYearFwdEpsDirect
+      : forwardEps != null &&
+          twoYearFwdEpsGrowth != null &&
+          Number.isFinite(forwardEps) &&
+          Number.isFinite(twoYearFwdEpsGrowth)
+        ? forwardEps * (1 + twoYearFwdEpsGrowth / 100)
+        : null;
+  const twoYearFwdPe =
+    lastPrice != null && twoYearFwdEps != null && Number.isFinite(twoYearFwdEps) && twoYearFwdEps !== 0
+      ? lastPrice / twoYearFwdEps
+      : null;
   const peg2Yr =
-    fwdPe != null && twoYearFwdEpsGrowth != null && twoYearFwdEpsGrowth !== 0 ? fwdPe / twoYearFwdEpsGrowth : null;
-  const adjustedOperatingGrowth = byMatcher(isAdjustedOperatingEarningsGrowthRateMetric)?.value ?? null;
+    twoYearFwdPe != null && twoYearFwdEpsGrowth != null && twoYearFwdEpsGrowth !== 0
+      ? twoYearFwdPe / twoYearFwdEpsGrowth
+      : null;
+  const adjustedOperatingGrowthMetric = byMatcher(isAdjustedOperatingEarningsGrowthRateMetric);
+  const adjustedOperatingGrowth = adjustedOperatingGrowthMetric?.value ?? null;
   const adjustedEarnings =
     typeof forwardEps === 'number' &&
     Number.isFinite(forwardEps) &&
@@ -383,6 +476,10 @@ export default function CompanyEntryPricingPage() {
     adjustedOperatingGrowth !== 0
       ? (lastPrice / adjustedEarnings) / adjustedOperatingGrowth
       : null;
+  const adjustedEarningsPe =
+    lastPrice != null && adjustedEarnings != null && Number.isFinite(adjustedEarnings) && adjustedEarnings !== 0
+      ? lastPrice / adjustedEarnings
+      : null;
   const forwardGrowth =
     typeof forwardEps === 'number' &&
     Number.isFinite(forwardEps) &&
@@ -398,6 +495,14 @@ export default function CompanyEntryPricingPage() {
     Number.isFinite(forwardGrowth) &&
     forwardGrowth !== 0
       ? fwdPe / forwardGrowth
+      : null;
+  const currentYearPeg =
+    historicalPe != null &&
+    Number.isFinite(historicalPe) &&
+    forwardGrowth != null &&
+    Number.isFinite(forwardGrowth) &&
+    forwardGrowth !== 0
+      ? historicalPe / forwardGrowth
       : null;
 
   const buyPriceRows = useMemo(() => {
@@ -506,10 +611,257 @@ export default function CompanyEntryPricingPage() {
 
   const companyScore: CompanyScores | undefined = company;
   const overallFundamentalAvg = companyScore ? avgOfScores(companyScore.scores) : null;
+  const safetyAvg = companyScore ? avgOfSafetyScores(companyScore.scores) : null;
+  const combinedScoreAvg =
+    overallFundamentalAvg != null && safetyAvg != null
+      ? (overallFundamentalAvg + safetyAvg) / 2
+      : overallFundamentalAvg ?? safetyAvg ?? null;
+  const qualityScoreRows = companyScore
+    ? QUALITY_SCORE_TYPES.map(st => ({
+        key: st,
+        label: SCORE_LABELS[st],
+        value: companyScore.scores[st as ScoreType] ?? null,
+      }))
+    : [];
+  const safetyScoreRows = companyScore
+    ? SAFETY_SCORE_TYPES.map(st => ({
+        key: st,
+        label: SCORE_LABELS[st],
+        value: companyScore.scores[st as ScoreType] ?? null,
+      }))
+    : [];
   const impliedTenYearCagr =
     lastPrice != null && tenYearTargetPrice != null && lastPrice > 0 && tenYearTargetPrice > 0
       ? impliedCagrPercentFromPrices(lastPrice, tenYearTargetPrice, 10)
       : null;
+
+  const growthOptions = useMemo(
+    () =>
+      [
+        {
+          id: 'adjusted_operating' as const,
+          label: 'Adjusted operating earnings growth %',
+          value: adjustedOperatingGrowth,
+          source: adjustedOperatingGrowthMetric,
+        },
+        {
+          id: 'five_y_value' as const,
+          label: '5 Yr value compounding %',
+          value: fiveYearValueCompounding,
+          source: fiveYearValueCompoundingMetric,
+        },
+        {
+          id: 'bits_vca' as const,
+          label: '10Y CAGR % (BITS -> VCA)',
+          value: bitsToVcaTenYearCagr,
+          source: bitsToVcaMetricCaptured ?? bitsTargetMetric ?? tenYearTargetMetric,
+        },
+        {
+          id: 'two_y_eps' as const,
+          label: '2 Yr EPS growth %',
+          value: twoYearFwdEpsGrowth,
+          source: twoYearFwdEpsGrowthMetric,
+        },
+        {
+          id: 'ten_y_total' as const,
+          label: '10 Yr total CAGR %',
+          value: tenYearTotalCagr,
+          source: tenYearTotalCagrMetric,
+        },
+      ].filter(x => x.value != null && Number.isFinite(x.value)),
+    [
+      adjustedOperatingGrowth,
+      adjustedOperatingGrowthMetric,
+      fiveYearValueCompounding,
+      fiveYearValueCompoundingMetric,
+      bitsToVcaTenYearCagr,
+      bitsToVcaMetricCaptured,
+      bitsTargetMetric,
+      tenYearTargetMetric,
+      twoYearFwdEpsGrowth,
+      twoYearFwdEpsGrowthMetric,
+      tenYearTotalCagr,
+      tenYearTotalCagrMetric,
+    ],
+  );
+  const [simGrowthSource, setSimGrowthSource] = useState<SimulationGrowthSource>('custom');
+  const [simGrowthPct, setSimGrowthPct] = useState<number>(0);
+  const [simPe, setSimPe] = useState<number>(15);
+  const [simPriceSource, setSimPriceSource] = useState<SimulationPriceSource>('custom');
+  const [simBasePrice, setSimBasePrice] = useState<number>(0);
+  const [simEarningsSource, setSimEarningsSource] = useState<SimulationEarningsSource>('custom');
+  const [simEarningsMetricId, setSimEarningsMetricId] = useState<string>('');
+  const [simEarningsValue, setSimEarningsValue] = useState<number>(0);
+  const simEarningsMetricCandidates = useMemo(
+    () =>
+      metricPoints
+        .filter(p => isLikelyPerShareValueMetric(p.label, p.key))
+        .slice(0, 14),
+    [metricPoints],
+  );
+  const simMetricMap = useMemo(() => {
+    const m = new Map<string, MetricPoint>();
+    for (const p of metricPoints) m.set(p.id, p);
+    return m;
+  }, [metricPoints]);
+  const simEarningsPresetOptions = useMemo(
+    () =>
+      [
+        { id: 'current_eps' as const, label: 'Current EPS', value: currentYearEps },
+        { id: 'forward_eps' as const, label: 'Forward EPS', value: forwardEps },
+        { id: 'two_y_fwd_eps' as const, label: '2 Yr Fwd EPS', value: twoYearFwdEps },
+        { id: 'adjusted_earnings' as const, label: 'Adjusted Earnings', value: adjustedEarnings },
+      ].filter(x => x.value != null && Number.isFinite(x.value)),
+    [currentYearEps, forwardEps, twoYearFwdEps, adjustedEarnings],
+  );
+  const simEarningsTiles = useMemo(() => {
+    const presets = simEarningsPresetOptions.map(o => ({
+      key: `preset:${o.id}`,
+      mode: 'preset' as const,
+      presetId: o.id,
+      title: o.label,
+      short: o.label,
+      value: o.value,
+    }));
+    const metrics = simEarningsMetricCandidates.map(p => ({
+      key: `metric:${p.id}`,
+      mode: 'metric' as const,
+      metricId: p.id,
+      title: p.label,
+      short: p.label,
+      value: p.value,
+    }));
+    return [
+      ...presets,
+      ...metrics,
+      {
+        key: 'custom',
+        mode: 'custom' as const,
+        presetId: undefined as undefined,
+        metricId: undefined as undefined,
+        title: 'Custom value',
+        short: 'Custom Value',
+        value: null as number | null,
+      },
+    ];
+  }, [simEarningsPresetOptions, simEarningsMetricCandidates]);
+  const simPriceOptions = useMemo(
+    () =>
+      [
+        { id: 'market' as const, label: 'Current price', value: lastPrice },
+        { id: 'blood' as const, label: 'Blood in the streets', value: buyPriceRows.find(r => r.id === 'blood')?.buyPrice ?? null },
+        { id: 'lowx' as const, label: 'Low X Growth Desired Buy Price', value: buyPriceRows.find(r => r.id === 'lowx')?.buyPrice ?? null },
+        { id: 'mos20' as const, label: 'Buy Price 20% MOS', value: buyPriceRows.find(r => r.id === 'mos20')?.buyPrice ?? null },
+        { id: 'mos30' as const, label: 'Buy Price 30% MOS', value: buyPriceRows.find(r => r.id === 'mos30')?.buyPrice ?? null },
+      ].filter(o => o.value != null && Number.isFinite(o.value)),
+    [lastPrice, buyPriceRows],
+  );
+  useEffect(() => {
+    const defaultGrowthOption = growthOptions.find(g => g.id === 'adjusted_operating') ?? growthOptions[0];
+    const defaultGrowth = defaultGrowthOption?.value ?? 10;
+    setSimGrowthSource(defaultGrowthOption?.id ?? 'custom');
+    setSimGrowthPct(Number(defaultGrowth.toFixed(2)));
+    const peDefault = normalPeCfv ?? historicalPe ?? targetPe ?? 15;
+    setSimPe(Number(peDefault.toFixed(2)));
+    const defaultPriceOption = simPriceOptions.find(p => p.id === 'market') ?? simPriceOptions[0];
+    setSimPriceSource(defaultPriceOption?.id ?? 'custom');
+    setSimBasePrice(Number((defaultPriceOption?.value ?? lastPrice ?? 0).toFixed(2)));
+    setSimEarningsSource('current_eps');
+    setSimEarningsMetricId('');
+    setSimEarningsValue(Number((currentYearEps ?? 0).toFixed(4)));
+  }, [
+    selectedCompanyId,
+    adjustedOperatingGrowth,
+    fiveYearValueCompounding,
+    bitsToVcaTenYearCagr,
+    twoYearFwdEpsGrowth,
+    tenYearTotalCagr,
+    normalPeCfv,
+    historicalPe,
+    targetPe,
+    growthOptions,
+    simPriceOptions,
+    lastPrice,
+    currentYearEps,
+  ]);
+  const simPeSlider = useMemo(() => {
+    const base = simPe;
+    const fallback = { min: 5, max: 60 };
+    const bounds = sliderBounds(base, fallback, 0.45);
+    return { min: bounds.min, max: bounds.max, value: clamp(base, bounds.min, bounds.max) };
+  }, [simPe]);
+  const simGrowthSlider = useMemo(() => {
+    const fallback = { min: -20, max: 40 };
+    const bounds = sliderBounds(simGrowthPct, fallback, 0.6);
+    return { min: bounds.min, max: bounds.max, value: clamp(simGrowthPct, bounds.min, bounds.max) };
+  }, [simGrowthPct]);
+  const simYearlyProjection = useMemo(() => {
+    if (!Number.isFinite(simEarningsValue) || simEarningsValue <= 0) return [];
+    if (!Number.isFinite(simGrowthPct) || !Number.isFinite(simPe)) return [];
+    const yr10TargetPrice = simEarningsValue * Math.pow(1 + simGrowthPct / 100, 10) * simPe;
+    const startPrice = Number.isFinite(simBasePrice) && simBasePrice > 0 ? simBasePrice : null;
+    const impliedCagr =
+      startPrice != null && yr10TargetPrice > 0 ? impliedCagrPercentFromPrices(startPrice, yr10TargetPrice, 10) : null;
+    return Array.from({ length: 11 }, (_, y) => {
+      const eps = simEarningsValue * Math.pow(1 + simGrowthPct / 100, y);
+      const price =
+        startPrice != null && impliedCagr != null && Number.isFinite(impliedCagr)
+          ? startPrice * Math.pow(1 + impliedCagr / 100, y)
+          : eps * simPe;
+      return { year: y, eps, price };
+    });
+  }, [simEarningsValue, simGrowthPct, simPe, simBasePrice]);
+  const simChartData = useMemo(() => {
+    if (simYearlyProjection.length === 0) return null;
+    const width = 400;
+    const height = 108;
+    const padX = 6;
+    const topPad = 5;
+    const bottomPad = 20;
+    const chartTop = topPad;
+    const chartBottom = height - bottomPad;
+    const chartH = chartBottom - chartTop;
+    const chartW = width - 2 * padX;
+    const allPrices = simYearlyProjection.map(p => p.price).filter(Number.isFinite);
+    const minPrice = Math.min(...allPrices);
+    const maxPrice = Math.max(...allPrices);
+    const safeSpan = Math.max(1e-9, maxPrice - minPrice);
+    const n = simYearlyProjection.length;
+    const xs: number[] = [];
+    const ys: number[] = [];
+    for (let idx = 0; idx < n; idx++) {
+      const p = simYearlyProjection[idx];
+      xs.push(padX + (idx / Math.max(1, n - 1)) * chartW);
+      ys.push(chartBottom - ((p.price - minPrice) / safeSpan) * chartH);
+    }
+    const points = xs.map((x, i) => `${x.toFixed(2)},${ys[i]!.toFixed(2)}`).join(' ');
+    const startPrice = simYearlyProjection[0]?.price ?? 0;
+    const endPrice = simYearlyProjection[n - 1]?.price ?? 0;
+    const xStart = xs[0] ?? padX;
+    const xEnd = xs[n - 1] ?? width - padX;
+    const yEnd = ys[n - 1] ?? chartTop;
+    const labelTargetY = yEnd < chartTop + 14 ? yEnd + 12 : yEnd - 8;
+    const labelTargetX = xEnd > width - 48 ? xEnd - 2 : xEnd;
+    const targetLabelAnchor: 'end' | 'middle' = xEnd > width - 48 ? 'end' : 'middle';
+    return {
+      width,
+      height,
+      padX,
+      chartTop,
+      chartBottom,
+      points,
+      minPrice,
+      maxPrice,
+      xStart,
+      xEnd,
+      yEnd,
+      startPrice,
+      endPrice,
+      labelTargetY,
+      labelTargetX,
+      targetLabelAnchor,
+    };
+  }, [simYearlyProjection]);
   const positionSizingResult =
     companyScore != null
       ? calculatePositionSize({
@@ -543,6 +895,7 @@ export default function CompanyEntryPricingPage() {
     const weightedSum = stagedTranchePlan.rows.reduce((s, r) => s + (r.price as number) * r.addUnits, 0);
     return { weightedAvgScaleInPrice: weightedSum / unitsTotal, unitsTotal };
   }, [stagedTranchePlan]);
+  const weightedScaleInPrice = ladderWeightedAvg?.weightedAvgScaleInPrice ?? null;
 
   const loading = gemsLoading || runsLoading || scoresLoading;
   const exportCsv = useCallback(() => {
@@ -796,21 +1149,29 @@ export default function CompanyEntryPricingPage() {
                 Make Favourite
               </button>
             </div>
-            <input
-              type="search"
-              placeholder="Search name or ticker..."
-              value={companyFilter}
-              onChange={e => setCompanyFilter(e.target.value)}
-              className="sizing-input sizing-company-search"
-            />
-            <select value={selectedCompanyId} onChange={e => handleCompanyChange(e.target.value)} className="sizing-select">
-              <option value="">— Select a company —</option>
-              {displayCompanies.map(c => (
-                <option key={c.companyId} value={c.companyId}>
-                  {c.companyName} ({c.ticker})
-                </option>
+            <div className="entry-company-search-row">
+              <input
+                type="search"
+                placeholder="Search name or ticker..."
+                value={companyFilter}
+                onChange={e => handleCompanyFilterInput(e.target.value)}
+                className="sizing-input sizing-company-search"
+                list="entry-pricing-company-search-options"
+              />
+              <select value={selectedCompanyId} onChange={e => handleCompanyChange(e.target.value)} className="sizing-select">
+                <option value="">— Select a company —</option>
+                {displayCompanies.map(c => (
+                  <option key={c.companyId} value={c.companyId}>
+                    {c.companyName} ({c.ticker})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <datalist id="entry-pricing-company-search-options">
+              {companySearchOptions.map(c => (
+                <option key={c.id} value={c.label} />
               ))}
-            </select>
+            </datalist>
           </div>
         </div>
       </div>
@@ -827,6 +1188,16 @@ export default function CompanyEntryPricingPage() {
           </p>
         </div>
         <div className="entry-pricing-header-actions">
+          <Link
+            className="btn btn-ghost btn-sm"
+            to={`/position-sizing?company=${encodeURIComponent(company.companyId)}`}
+            state={{ from: returnTo }}
+          >
+            Open Position Sizing
+          </Link>
+          <Link className="btn btn-ghost btn-sm" to={`/company/${encodeURIComponent(company.companyId)}`} state={{ from: '/metrics' }}>
+            Company detail
+          </Link>
           <button className="btn btn-ghost btn-back" onClick={() => navigateBackWithFallback(navigate, backTo, '/metrics')}>
             Back
           </button>
@@ -839,102 +1210,386 @@ export default function CompanyEntryPricingPage() {
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => void exportJson()} disabled={!company}>
             Export JSON
           </button>
-          <Link
-            className="btn btn-ghost btn-sm"
-            to={`/position-sizing?company=${encodeURIComponent(company.companyId)}`}
-            state={{ from: returnTo }}
-          >
-            Open Position Sizing
-          </Link>
-          <Link className="btn btn-ghost btn-sm" to={`/company/${encodeURIComponent(company.companyId)}`} state={{ from: '/metrics' }}>
-            Company detail
-          </Link>
         </div>
       </div>
 
-      <div className="sizing-inputs-row">
-        <div className="sizing-field sizing-field--company">
-          <div className="sizing-company-label-row">
-            <label>Company</label>
-            <button
-              type="button"
-              className="btn btn-sm btn-ghost sizing-favourite-save-btn"
-              disabled={!selectedCompanyId}
-              onClick={handleSaveFavourite}
-            >
-              {selectedIsFavourite ? 'Update Favourite' : 'Make Favourite'}
-            </button>
-          </div>
-          <input
-            type="search"
-            placeholder="Search name or ticker..."
-            value={companyFilter}
-            onChange={e => setCompanyFilter(e.target.value)}
-            className="sizing-input sizing-company-search"
-          />
-          <select value={selectedCompanyId} onChange={e => handleCompanyChange(e.target.value)} className="sizing-select">
-            <option value="">— Select a company —</option>
-            {displayCompanies.map(c => (
-              <option key={c.companyId} value={c.companyId}>
-                {c.companyName} ({c.ticker})
-              </option>
-            ))}
-          </select>
-          <div className="sizing-favourites-panel">
-            <div className="sizing-favourites-header">
-              <span>Favourites</span>
-              <span className="sizing-favourites-cap">
-                {favourites.length}/{MAX_FAVOURITES}
-              </span>
-            </div>
-            {favourites.length === 0 ? (
-              <p className="sizing-favourites-empty">Save frequently researched companies for quick switching.</p>
-            ) : (
-              <div className="sizing-favourites-list" role="list" aria-label="Saved favourite companies">
-                {favourites.map(fav => (
-                  <div key={fav.companyId} className="sizing-favourite-item" role="listitem">
-                    <button
-                      type="button"
-                      className={`sizing-favourite-load ${fav.companyId === selectedCompanyId ? 'active' : ''}`}
-                      onClick={() => handleApplyFavourite(fav)}
-                    >
-                      <span className="sizing-favourite-title">{fav.companyName}</span>
-                      <span className="sizing-favourite-meta">{fav.ticker}</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-icon sizing-favourite-delete"
-                      onClick={() => handleDeleteFavourite(fav.companyId)}
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
+      <div className="entry-pricing-top-layout">
+        <div className="entry-pricing-top-main">
+          <div className="sizing-inputs-row">
+            <div className="sizing-field sizing-field--company">
+              <div className="sizing-company-label-row">
+                <label>Company</label>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost sizing-favourite-save-btn"
+                  disabled={!selectedCompanyId}
+                  onClick={handleSaveFavourite}
+                >
+                  {selectedIsFavourite ? 'Update Favourite' : 'Make Favourite'}
+                </button>
               </div>
+              <div className="entry-company-search-row">
+                <input
+                  type="search"
+                  placeholder="Search name or ticker..."
+                  value={companyFilter}
+                  onChange={e => handleCompanyFilterInput(e.target.value)}
+                  className="sizing-input sizing-company-search"
+                  list="entry-pricing-company-search-options"
+                />
+                <select value={selectedCompanyId} onChange={e => handleCompanyChange(e.target.value)} className="sizing-select">
+                  <option value="">— Select a company —</option>
+                  {displayCompanies.map(c => (
+                    <option key={c.companyId} value={c.companyId}>
+                      {c.companyName} ({c.ticker})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <datalist id="entry-pricing-company-search-options">
+                {companySearchOptions.map(c => (
+                  <option key={c.id} value={c.label} />
+                ))}
+              </datalist>
+              <div className="sizing-favourites-panel">
+                <div className="sizing-favourites-header">
+                  <span>Favourites</span>
+                  <span className="sizing-favourites-cap">
+                    {favourites.length}/{MAX_FAVOURITES}
+                  </span>
+                </div>
+                {favourites.length === 0 ? (
+                  <p className="sizing-favourites-empty">Save frequently researched companies for quick switching.</p>
+                ) : (
+                  <div className="sizing-favourites-list" role="list" aria-label="Saved favourite companies">
+                    {favourites.map(fav => (
+                      <div key={fav.companyId} className="sizing-favourite-item" role="listitem">
+                        <button
+                          type="button"
+                          className={`sizing-favourite-load ${fav.companyId === selectedCompanyId ? 'active' : ''}`}
+                          onClick={() => handleApplyFavourite(fav)}
+                        >
+                          <span className="sizing-favourite-title">{fav.companyName}</span>
+                          <span className="sizing-favourite-meta">{fav.ticker}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-icon sizing-favourite-delete"
+                          onClick={() => handleDeleteFavourite(fav.companyId)}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="entry-pricing-kpis entry-pricing-kpis--tight">
+            <div className="entry-kpi-card"><span>Last price</span><strong>{quotesLoading ? 'Loading...' : fmtNumber(lastPrice, 2)}</strong></div>
+            <div className="entry-kpi-card">
+              <span>Normal P/E (CFV)</span>
+              <strong>{renderLinkedValue(fmtNumber(normalPeCfv, 2), normalPeCfvMetric)}</strong>
+            </div>
+            <div className="entry-kpi-card">
+              <span>10Y Target / 10Y CAGR</span>
+              <strong>{renderLinkedValue(fmtNumber(tenYearTargetPrice, 2), tenYearTargetMetric)} / {renderLinkedValue(fmtPct(tenYearTotalCagr, 2), tenYearTotalCagrMetric)}</strong>
+            </div>
+            <div className="entry-kpi-card"><span>Overall Fundamental Avg</span><strong>{fmtNumber(overallFundamentalAvg, 2)}</strong></div>
+          </div>
+        </div>
+
+        <div className="entry-pricing-panel entry-pricing-sim-panel">
+          <div className="entry-sim-panel-head">
+            <h3 className="entry-sim-panel-title">Simulation Corner</h3>
+            <span className="entry-sim-tip" tabIndex={0}>
+              ?
+              <span className="entry-sim-tip-panel">
+                Choose Base Price, Metric, and P/E to set your Yr 10 target. Choose a growth source or use the growth
+                slider. The chart plots price path from Yr 0 to Yr 10.
+              </span>
+            </span>
+          </div>
+
+          <div className="entry-sim-layout">
+            <div className="entry-sim-controls">
+              <div className="entry-sim-mega-row" role="group" aria-label="Base price, metric, and P/E">
+            <div className="entry-sim-mega-cell entry-sim-mega-cell--strip">
+              <span className="entry-sim-mega-label">Base</span>
+              <div className="entry-sim-tile-strip">
+                {simPriceOptions.map(opt => {
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      title={opt.label}
+                      className={`entry-sim-tile ${simPriceSource === opt.id ? 'active' : ''}`}
+                      onClick={() => {
+                        setSimPriceSource(opt.id);
+                        setSimBasePrice(Number((opt.value ?? 0).toFixed(2)));
+                      }}
+                    >
+                      <span className="entry-sim-tile-title">{opt.label}</span>
+                      <span className="entry-sim-tile-val">{fmtNumber(opt.value ?? null, 2)}</span>
+                    </button>
+                  );
+                })}
+                {weightedScaleInPrice != null ? (
+                  <button
+                    type="button"
+                    title="Weighted avg scale-in price"
+                    className={`entry-sim-tile ${simPriceSource === 'weighted_scale_in' ? 'active' : ''}`}
+                    onClick={() => {
+                      setSimPriceSource('weighted_scale_in');
+                      setSimBasePrice(Number(weightedScaleInPrice.toFixed(2)));
+                    }}
+                  >
+                    <span className="entry-sim-tile-title">Weighted avg scale-in price</span>
+                    <span className="entry-sim-tile-val">{fmtNumber(weightedScaleInPrice, 2)}</span>
+                  </button>
+                ) : null}
+                <input
+                  type="number"
+                  step="0.01"
+                  value={Number.isFinite(simBasePrice) ? simBasePrice : ''}
+                  className="entry-sim-input-tiny"
+                  onChange={e => {
+                    setSimPriceSource('custom');
+                    setSimBasePrice(Number(parseFloat(e.target.value || '0').toFixed(4)));
+                  }}
+                  aria-label="Custom base price"
+                />
+              </div>
+            </div>
+            <div className="entry-sim-mega-cell entry-sim-mega-cell--strip">
+              <span className="entry-sim-mega-label">Metric</span>
+              <div className="entry-sim-tile-strip">
+                {simEarningsTiles.map(tile => {
+                  if (tile.mode === 'custom') {
+                    const active = simEarningsSource === 'custom';
+                    return (
+                      <button
+                        key={tile.key}
+                        type="button"
+                        title={tile.title}
+                        className={`entry-sim-tile ${active ? 'active' : ''}`}
+                        onClick={() => setSimEarningsSource('custom')}
+                      >
+                        <span className="entry-sim-tile-title">{tile.short}</span>
+                      </button>
+                    );
+                  }
+                  if (tile.mode === 'preset') {
+                    const active = simEarningsSource === tile.presetId;
+                    return (
+                      <button
+                        key={tile.key}
+                        type="button"
+                        title={tile.title}
+                        className={`entry-sim-tile ${active ? 'active' : ''}`}
+                        onClick={() => {
+                          setSimEarningsSource(tile.presetId);
+                          setSimEarningsMetricId('');
+                          if (tile.value != null) setSimEarningsValue(Number(tile.value.toFixed(4)));
+                        }}
+                      >
+                        <span className="entry-sim-tile-title">{tile.short}</span>
+                        <span className="entry-sim-tile-val">{fmtNumber(tile.value, 2)}</span>
+                      </button>
+                    );
+                  }
+                  const active = simEarningsSource === 'metric' && simEarningsMetricId === tile.metricId;
+                  return (
+                    <button
+                      key={tile.key}
+                      type="button"
+                      title={tile.title}
+                      className={`entry-sim-tile ${active ? 'active' : ''}`}
+                      onClick={() => {
+                        const metric = simMetricMap.get(tile.metricId ?? '');
+                        setSimEarningsSource('metric');
+                        setSimEarningsMetricId(tile.metricId ?? '');
+                        if (metric?.value != null) setSimEarningsValue(Number(metric.value.toFixed(4)));
+                      }}
+                    >
+                      <span className="entry-sim-tile-title">{tile.short}</span>
+                      <span className="entry-sim-tile-val">{fmtNumber(tile.value, 2)}</span>
+                    </button>
+                  );
+                })}
+                <input
+                  type="number"
+                  step="0.01"
+                  value={Number.isFinite(simEarningsValue) ? simEarningsValue : ''}
+                  className="entry-sim-input-tiny"
+                  onChange={e => {
+                    setSimEarningsSource('custom');
+                    setSimEarningsMetricId('');
+                    setSimEarningsValue(Number(parseFloat(e.target.value || '0').toFixed(4)));
+                  }}
+                  aria-label="Metric value"
+                />
+              </div>
+            </div>
+            <div className="entry-sim-mega-cell entry-sim-mega-cell--pe">
+              <span className="entry-sim-mega-label">P/E</span>
+              <div className="entry-sim-pe-compact">
+                <strong className="entry-sim-pe-num">{fmtNumber(simPe, 2)}</strong>
+                <input
+                  type="range"
+                  min={simPeSlider.min}
+                  max={simPeSlider.max}
+                  step={0.1}
+                  value={simPeSlider.value}
+                  className="sizing-cagr-slider entry-sim-pe-slider"
+                  onChange={e => setSimPe(Number(parseFloat(e.target.value).toFixed(2)))}
+                  aria-label="Simulation P/E slider"
+                />
+                <div className="entry-sim-pe-scale">
+                  <span>{fmtNumber(simPeSlider.min, 0)}</span>
+                  <span>{fmtNumber(simPeSlider.max, 0)}</span>
+                </div>
+              </div>
+            </div>
+              </div>
+
+              <div className="entry-sim-growth-row" role="group" aria-label="EPS growth source and slider">
+                <span className="entry-sim-mega-label">EPS Growth Source</span>
+                <div className="entry-sim-tile-strip entry-sim-tile-strip--grow">
+                  {growthOptions.map(opt => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      title={opt.label}
+                      className={`entry-sim-tile entry-sim-tile--growth ${simGrowthSource === opt.id ? 'active' : ''}`}
+                      onClick={() => {
+                        setSimGrowthSource(opt.id);
+                        setSimGrowthPct(Number((opt.value ?? 0).toFixed(2)));
+                      }}
+                    >
+                      <span className="entry-sim-tile-title">{opt.label}</span>
+                      <span className="entry-sim-tile-val">{renderLinkedValue(fmtPct(opt.value ?? null, 1), opt.source ?? null)}</span>
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    title="Custom growth"
+                    className={`entry-sim-tile entry-sim-tile--growth ${simGrowthSource === 'custom' ? 'active' : ''}`}
+                    onClick={() => setSimGrowthSource('custom')}
+                  >
+                    <span className="entry-sim-tile-title">Custom growth</span>
+                    <span className="entry-sim-tile-val">{fmtPct(simGrowthPct, 1)}</span>
+                  </button>
+                </div>
+                <div className="entry-sim-growth-slider">
+                  <span className="entry-sim-growth-slider-val">{fmtPct(simGrowthSlider.value, 1)}</span>
+                  <input
+                    type="range"
+                    min={simGrowthSlider.min}
+                    max={simGrowthSlider.max}
+                    step={0.1}
+                    value={simGrowthSlider.value}
+                    className="sizing-cagr-slider entry-sim-growth-range"
+                    onChange={e => {
+                      setSimGrowthSource('custom');
+                      setSimGrowthPct(Number(parseFloat(e.target.value).toFixed(2)));
+                    }}
+                    aria-label="EPS growth slider"
+                  />
+                  <div className="entry-sim-pe-scale entry-sim-growth-range-scale">
+                    <span>{fmtPct(simGrowthSlider.min, 0)}</span>
+                    <span>{fmtPct(simGrowthSlider.max, 0)}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {simChartData ? (
+              <div className="entry-sim-chart-wrap">
+                <div className="entry-sim-chart-heading">Target price path (Yr 0-10)</div>
+                <svg
+                  viewBox={`0 0 ${simChartData.width} ${simChartData.height}`}
+                  className="entry-sim-chart"
+                  role="img"
+                  aria-label="Target price simulation chart"
+                >
+                  <polyline points={simChartData.points} className="entry-sim-chart-line" />
+                  <text x={simChartData.xStart} y={simChartData.height - 14} className="entry-sim-chart-label-svg entry-sim-chart-label-svg--muted">
+                    Yr 0
+                  </text>
+                  <text x={simChartData.xStart} y={simChartData.height - 3} className="entry-sim-chart-label-svg entry-sim-chart-label-svg--value">
+                    {fmtNumber(simChartData.startPrice, 2)}
+                  </text>
+                  <text
+                    x={simChartData.width - simChartData.padX}
+                    y={simChartData.height - 3}
+                    textAnchor="end"
+                    className="entry-sim-chart-label-svg entry-sim-chart-label-svg--muted"
+                  >
+                    Yr 10
+                  </text>
+                  <text
+                    x={simChartData.labelTargetX}
+                    y={simChartData.labelTargetY}
+                    textAnchor={simChartData.targetLabelAnchor}
+                    className="entry-sim-chart-label-svg entry-sim-chart-label-svg--target"
+                  >
+                    {fmtNumber(simChartData.endPrice, 2)}
+                  </text>
+                </svg>
+              </div>
+            ) : (
+              <p className="entry-pricing-caption entry-sim-empty">Add a valid metric value to plot.</p>
             )}
           </div>
         </div>
       </div>
 
-      <div className="entry-pricing-kpis">
-        <div className="entry-kpi-card"><span>Last price</span><strong>{quotesLoading ? 'Loading...' : fmtNumber(lastPrice, 2)}</strong></div>
-        <div className="entry-kpi-card">
-          <span>Historical PE</span>
-          <strong>{renderLinkedValue(fmtNumber(historicalPe, 2), byMatcher(isCurrentYearEpsMetric))}</strong>
-        </div>
-        <div className="entry-kpi-card">
-          <span>Normal P/E (CFV)</span>
-          <strong>{renderLinkedValue(fmtNumber(normalPeCfv, 2), normalPeCfvMetric)}</strong>
-        </div>
-        <div className="entry-kpi-card">
-          <span>Fwd PE / PEG (2Y)</span>
-          <strong>{renderLinkedValue(fmtNumber(fwdPe, 2), byMatcher(isForwardEpsMetric))} / {renderLinkedValue(fmtNumber(peg2Yr, 2), byMatcher(isTwoYearForwardEpsGrowthMetric))}</strong>
-        </div>
-        <div className="entry-kpi-card">
-          <span>10Y Target / 10Y CAGR</span>
-          <strong>{renderLinkedValue(fmtNumber(tenYearTargetPrice, 2), tenYearTargetMetric)} / {renderLinkedValue(fmtPct(tenYearTotalCagr, 2), tenYearTotalCagrMetric)}</strong>
-        </div>
-        <div className="entry-kpi-card"><span>Overall Fundamental Avg</span><strong>{fmtNumber(overallFundamentalAvg, 2)}</strong></div>
+      <div className="entry-pricing-panel">
+        <h3>EPS And Valuation Summary</h3>
+        <table className="entry-mini-table">
+          <thead>
+            <tr>
+              <th>Line Item</th>
+              <th>EPS</th>
+              <th>PE</th>
+              <th>Growth</th>
+              <th>PEG</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Current Year EPS, PE, PEG</th>
+              <td>{renderLinkedValue(fmtNumber(currentYearEps, 2), currentYearEpsMetric)}</td>
+              <td>{renderLinkedValue(fmtNumber(historicalPe, 2), currentYearEpsMetric)}</td>
+              <td>{renderLinkedValue(fmtPct(forwardGrowth, 2), byMatcher(isForwardEpsMetric))}</td>
+              <td>{renderLinkedValue(fmtNumber(currentYearPeg, 2), byMatcher(isForwardEpsMetric))}</td>
+            </tr>
+            <tr>
+              <th>Forward EPS, Forward PE, PEG (Fwd)</th>
+              <td>{renderLinkedValue(fmtNumber(forwardEps, 2), byMatcher(isForwardEpsMetric))}</td>
+              <td>{renderLinkedValue(fmtNumber(fwdPe, 2), byMatcher(isForwardEpsMetric))}</td>
+              <td>{renderLinkedValue(fmtPct(forwardGrowth, 2), byMatcher(isForwardEpsMetric))}</td>
+              <td>{renderLinkedValue(fmtNumber(pegFwd, 2), byMatcher(isForwardEpsMetric))}</td>
+            </tr>
+            <tr>
+              <th>2 Yr Fwd EPS, 2 Yr Forward PE, PEG (2 Yr Fwd EPS growth)</th>
+              <td>{renderLinkedValue(fmtNumber(twoYearFwdEps, 2), byMatcher(isTwoYearForwardEpsMetric) ?? byMatcher(isTwoYearForwardEpsGrowthMetric))}</td>
+              <td>{renderLinkedValue(fmtNumber(twoYearFwdPe, 2), byMatcher(isTwoYearForwardEpsMetric) ?? byMatcher(isTwoYearForwardEpsGrowthMetric))}</td>
+              <td>{renderLinkedValue(fmtPct(twoYearFwdEpsGrowth, 2), byMatcher(isTwoYearForwardEpsGrowthMetric))}</td>
+              <td>{renderLinkedValue(fmtNumber(peg2Yr, 2), byMatcher(isTwoYearForwardEpsGrowthMetric))}</td>
+            </tr>
+            <tr>
+              <th>Adjusted Earnings, PE (Adjusted Earnings), PEG (Adjusted Earnings)</th>
+              <td>{renderLinkedValue(fmtNumber(adjustedEarnings, 2), byMatcher(isAdjustedOperatingEarningsGrowthRateMetric) ?? byMatcher(isForwardEpsMetric))}</td>
+              <td>{renderLinkedValue(fmtNumber(adjustedEarningsPe, 2), byMatcher(isAdjustedOperatingEarningsGrowthRateMetric) ?? byMatcher(isForwardEpsMetric))}</td>
+              <td>{renderLinkedValue(fmtPct(adjustedOperatingGrowth, 2), byMatcher(isAdjustedOperatingEarningsGrowthRateMetric) ?? byMatcher(isForwardEpsMetric))}</td>
+              <td>{renderLinkedValue(fmtNumber(pegAdjustedEarnings, 2), byMatcher(isAdjustedOperatingEarningsGrowthRateMetric) ?? byMatcher(isForwardEpsMetric))}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
 
       <div className="entry-pricing-panel">
@@ -972,72 +1627,77 @@ export default function CompanyEntryPricingPage() {
         </div>
       </div>
 
-      <div className="entry-pricing-grid entry-pricing-grid--triple">
-        <div className="entry-pricing-panel">
-          <h3>Target And Compounding</h3>
-          <table className="entry-mini-table">
-            <tbody>
-              <tr><th>10 Yr Target price</th><td>{fmtNumber(tenYearTargetPrice, 2)}</td></tr>
-              <tr><th>Target P/E</th><td>{renderLinkedValue(fmtNumber(targetPe, 2), targetPeMetric)}</td></tr>
-              <tr><th>10 Yr total CAGR</th><td>{renderLinkedValue(fmtPct(tenYearTotalCagr, 2), tenYearTotalCagrMetric)}</td></tr>
-              <tr><th>10Y CAGR % (BITS→VCA)</th><td>{renderLinkedValue(fmtPct(bitsToVcaTenYearCagr, 2), bitsToVcaMetricCaptured ?? bitsTargetMetric ?? tenYearTargetMetric)}</td></tr>
-              <tr><th>5 Yr value compounding %</th><td>{renderLinkedValue(fmtPct(fiveYearValueCompounding, 2), fiveYearValueCompoundingMetric)}</td></tr>
-            </tbody>
-          </table>
+      <div className="entry-pricing-grid entry-pricing-grid--triple entry-pricing-grid--compact">
+        <div className="entry-pricing-stack">
+          <div className="entry-pricing-panel">
+            <h3>Target And Compounding</h3>
+            <table className="entry-mini-table">
+              <tbody>
+                <tr><th>10 Yr Target price</th><td>{fmtNumber(tenYearTargetPrice, 2)}</td></tr>
+                <tr><th>Target P/E</th><td>{renderLinkedValue(fmtNumber(targetPe, 2), targetPeMetric)}</td></tr>
+                <tr><th>10 Yr total CAGR</th><td>{renderLinkedValue(fmtPct(tenYearTotalCagr, 2), tenYearTotalCagrMetric)}</td></tr>
+                <tr><th>10Y CAGR % (BITS→VCA)</th><td>{renderLinkedValue(fmtPct(bitsToVcaTenYearCagr, 2), bitsToVcaMetricCaptured ?? bitsTargetMetric ?? tenYearTargetMetric)}</td></tr>
+                <tr><th>5 Yr value compounding %</th><td>{renderLinkedValue(fmtPct(fiveYearValueCompounding, 2), fiveYearValueCompoundingMetric)}</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div className="entry-pricing-panel">
+            <h3>Profitability Margins</h3>
+            <table className="entry-mini-table">
+              <tbody>
+                <tr><th>Net Profit Margin %</th><td>{renderLinkedValue(fmtPct(netProfitMarginMetric?.value ?? null, 2), netProfitMarginMetric)}</td></tr>
+                <tr><th>Gross Margin %</th><td>{renderLinkedValue(fmtPct(grossMarginMetric?.value ?? null, 2), grossMarginMetric)}</td></tr>
+                <tr><th>Operating Margin %</th><td>{renderLinkedValue(fmtPct(operatingMarginMetric?.value ?? null, 2), operatingMarginMetric)}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div className="entry-pricing-stack">
+          <div className="entry-pricing-panel">
+            <h3>Growth And Quality</h3>
+            <table className="entry-mini-table">
+              <tbody>
+                <tr><th>5 Yr Rev CAGR %</th><td>{renderLinkedValue(fmtPct(fiveYearRevCagr, 2), fiveYearRevCagrMetric)}</td></tr>
+                <tr><th>5 Yr FCF CAGR %</th><td>{renderLinkedValue(fmtPct(fiveYearFcfCagr, 2), fiveYearFcfCagrMetric)}</td></tr>
+                <tr><th>5 Yr EPS CAGR %</th><td>{renderLinkedValue(fmtPct(fiveYearEpsCagr, 2), fiveYearEpsCagrMetric)}</td></tr>
+                <tr><th>2 Yr fwd EPS growth %</th><td>{renderLinkedValue(fmtPct(twoYearFwdEpsGrowth, 2), byMatcher(isTwoYearForwardEpsGrowthMetric))}</td></tr>
+                <tr><th>Adjusted operating earnings growth %</th><td>{renderLinkedValue(fmtPct(adjustedOperatingGrowth, 2), byMatcher(isAdjustedOperatingEarningsGrowthRateMetric))}</td></tr>
+                <tr><th>Overall fundamental weighted avg</th><td>{fmtNumber(overallFundamentalAvg, 2)}</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div className="entry-pricing-panel">
+            <h3>Capital Efficiency</h3>
+            <table className="entry-mini-table">
+              <tbody>
+                <tr><th>ROIC %</th><td>{renderLinkedValue(fmtPct(roicMetric?.value ?? null, 2), roicMetric)}</td></tr>
+                <tr><th>ROE %</th><td>{renderLinkedValue(fmtPct(roeMetric?.value ?? null, 2), roeMetric)}</td></tr>
+                <tr><th>FCF / Net Income %</th><td>{renderLinkedValue(fmtPct(fcfNetIncomeMetric?.value ?? null, 2), fcfNetIncomeMetric)}</td></tr>
+                <tr><th>CapEx / Revenue %</th><td>{renderLinkedValue(fmtPct(capexRevenueMetric?.value ?? null, 2), capexRevenueMetric)}</td></tr>
+                <tr><th>FCF / Revenue %</th><td>{renderLinkedValue(fmtPct(fcfRevenueMetric?.value ?? null, 2), fcfRevenueMetric)}</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
         <div className="entry-pricing-panel">
-          <h3>Growth And Quality</h3>
+          <h3>Scorecard Metrics</h3>
           <table className="entry-mini-table">
             <tbody>
-              <tr><th>5 Yr Rev CAGR %</th><td>{renderLinkedValue(fmtPct(fiveYearRevCagr, 2), fiveYearRevCagrMetric)}</td></tr>
-              <tr><th>5 Yr FCF CAGR %</th><td>{renderLinkedValue(fmtPct(fiveYearFcfCagr, 2), fiveYearFcfCagrMetric)}</td></tr>
-              <tr><th>5 Yr EPS CAGR %</th><td>{renderLinkedValue(fmtPct(fiveYearEpsCagr, 2), fiveYearEpsCagrMetric)}</td></tr>
-              <tr><th>2 Yr fwd EPS growth %</th><td>{renderLinkedValue(fmtPct(twoYearFwdEpsGrowth, 2), byMatcher(isTwoYearForwardEpsGrowthMetric))}</td></tr>
-              <tr><th>Adjusted operating earnings growth %</th><td>{renderLinkedValue(fmtPct(adjustedOperatingGrowth, 2), byMatcher(isAdjustedOperatingEarningsGrowthRateMetric))}</td></tr>
-              <tr><th>Overall fundamental weighted avg</th><td>{fmtNumber(overallFundamentalAvg, 2)}</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <div className="entry-pricing-panel">
-          <h3>Valuation Multiples</h3>
-          <table className="entry-mini-table">
-            <tbody>
-              <tr><th>PEG (fwd)</th><td>{renderLinkedValue(fmtNumber(pegFwd, 2), byMatcher(isForwardEpsMetric))}</td></tr>
-              <tr><th>Fwd PE</th><td>{renderLinkedValue(fmtNumber(fwdPe, 2), byMatcher(isForwardEpsMetric))}</td></tr>
-              <tr><th>PEG (Adjusted Earnings)</th><td>{renderLinkedValue(fmtNumber(pegAdjustedEarnings, 2), byMatcher(isAdjustedOperatingEarningsGrowthRateMetric) ?? byMatcher(isForwardEpsMetric))}</td></tr>
-              <tr><th>PEG (2 Yr Fwd EPS growth)</th><td>{renderLinkedValue(fmtNumber(peg2Yr, 2), byMatcher(isTwoYearForwardEpsGrowthMetric))}</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <div className="entry-pricing-panel">
-          <h3>EPS Inputs</h3>
-          <table className="entry-mini-table">
-            <tbody>
-              <tr><th>Current Year EPS</th><td>{renderLinkedValue(fmtNumber(currentYearEps, 2), byMatcher(isCurrentYearEpsMetric))}</td></tr>
-              <tr><th>Forward EPS</th><td>{renderLinkedValue(fmtNumber(forwardEps, 2), byMatcher(isForwardEpsMetric))}</td></tr>
-              <tr><th>2 Yr Forward EPS growth %</th><td>{renderLinkedValue(fmtPct(twoYearFwdEpsGrowth, 2), byMatcher(isTwoYearForwardEpsGrowthMetric))}</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <div className="entry-pricing-panel">
-          <h3>Profitability Margins</h3>
-          <table className="entry-mini-table">
-            <tbody>
-              <tr><th>Net Profit Margin %</th><td>{renderLinkedValue(fmtPct(netProfitMarginMetric?.value ?? null, 2), netProfitMarginMetric)}</td></tr>
-              <tr><th>Gross Margin %</th><td>{renderLinkedValue(fmtPct(grossMarginMetric?.value ?? null, 2), grossMarginMetric)}</td></tr>
-              <tr><th>Operating Margin %</th><td>{renderLinkedValue(fmtPct(operatingMarginMetric?.value ?? null, 2), operatingMarginMetric)}</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <div className="entry-pricing-panel">
-          <h3>Capital Efficiency</h3>
-          <table className="entry-mini-table">
-            <tbody>
-              <tr><th>ROIC %</th><td>{renderLinkedValue(fmtPct(roicMetric?.value ?? null, 2), roicMetric)}</td></tr>
-              <tr><th>ROE %</th><td>{renderLinkedValue(fmtPct(roeMetric?.value ?? null, 2), roeMetric)}</td></tr>
-              <tr><th>FCF / Net Income %</th><td>{renderLinkedValue(fmtPct(fcfNetIncomeMetric?.value ?? null, 2), fcfNetIncomeMetric)}</td></tr>
-              <tr><th>CapEx / Revenue %</th><td>{renderLinkedValue(fmtPct(capexRevenueMetric?.value ?? null, 2), capexRevenueMetric)}</td></tr>
-              <tr><th>FCF / Revenue %</th><td>{renderLinkedValue(fmtPct(fcfRevenueMetric?.value ?? null, 2), fcfRevenueMetric)}</td></tr>
+              {qualityScoreRows.map(row => (
+                <tr key={`quality-${row.key}`}>
+                  <th>{row.label}</th>
+                  <td>{renderScorecardLinkedValue(fmtNumber(row.value, 2), row.key)}</td>
+                </tr>
+              ))}
+              <tr><th>Quality avg (Scorecard)</th><td>{fmtNumber(overallFundamentalAvg, 2)}</td></tr>
+              {safetyScoreRows.map(row => (
+                <tr key={`safety-${row.key}`}>
+                  <th>{row.label}</th>
+                  <td>{renderScorecardLinkedValue(fmtNumber(row.value, 2), row.key)}</td>
+                </tr>
+              ))}
+              <tr><th>Safety avg (Scorecard)</th><td>{fmtNumber(safetyAvg, 2)}</td></tr>
+              <tr><th>Combined safety score</th><td>{fmtNumber(combinedScoreAvg, 2)}</td></tr>
             </tbody>
           </table>
         </div>
