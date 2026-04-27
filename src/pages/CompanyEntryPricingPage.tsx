@@ -44,7 +44,9 @@ type EntryPricingFavourite = {
 type SimulationGrowthSource = 'adjusted_operating' | 'five_y_value' | 'bits_vca' | 'two_y_eps' | 'ten_y_total' | 'custom';
 type SimulationPriceSource = 'market' | 'blood' | 'lowx' | 'mos20' | 'mos30' | 'weighted_scale_in' | 'custom';
 type SimulationEarningsSource = 'current_eps' | 'forward_eps' | 'two_y_fwd_eps' | 'adjusted_earnings' | 'metric' | 'custom';
+type SimulationPeSource = 'normal_pe' | 'target_pe' | 'custom';
 const LS_ENTRY_PRICING_FAVOURITES = 'tjiunardi.dashboard.entryPricing.favourites.v1';
+const LS_LAST_SELECTED_COMPANY = 'tjiunardi.dashboard.lastSelectedCompanyId.v1';
 const MAX_FAVOURITES = 7;
 const STAGED_COL_TIP = {
   drawdown:
@@ -351,6 +353,27 @@ export default function CompanyEntryPricingPage() {
       /* ignore */
     }
   }, [favourites]);
+  useEffect(() => {
+    const fromQuery = searchParams.get('company');
+    if (fromQuery) return;
+    try {
+      const persistedCompanyId = localStorage.getItem(LS_LAST_SELECTED_COMPANY) ?? '';
+      if (!persistedCompanyId) return;
+      const next = new URLSearchParams(searchParams);
+      next.set('company', persistedCompanyId);
+      setSearchParams(next, { replace: true });
+    } catch {
+      /* ignore */
+    }
+  }, [searchParams, setSearchParams]);
+  useEffect(() => {
+    if (!selectedCompanyId) return;
+    try {
+      localStorage.setItem(LS_LAST_SELECTED_COMPANY, selectedCompanyId);
+    } catch {
+      /* ignore */
+    }
+  }, [selectedCompanyId]);
   const handleCompanyChange = (id: string) => {
     const next = new URLSearchParams(searchParams);
     if (id) next.set('company', id);
@@ -687,6 +710,7 @@ export default function CompanyEntryPricingPage() {
   const [simGrowthSource, setSimGrowthSource] = useState<SimulationGrowthSource>('custom');
   const [simGrowthPct, setSimGrowthPct] = useState<number>(0);
   const [simPe, setSimPe] = useState<number>(15);
+  const [simPeSource, setSimPeSource] = useState<SimulationPeSource>('custom');
   const [simPriceSource, setSimPriceSource] = useState<SimulationPriceSource>('custom');
   const [simBasePrice, setSimBasePrice] = useState<number>(0);
   const [simEarningsSource, setSimEarningsSource] = useState<SimulationEarningsSource>('custom');
@@ -756,12 +780,22 @@ export default function CompanyEntryPricingPage() {
       ].filter(o => o.value != null && Number.isFinite(o.value)),
     [lastPrice, buyPriceRows],
   );
+  const peSourceOptions = useMemo(
+    () =>
+      [
+        { id: 'normal_pe' as const, label: 'Normal P/E', value: normalPeCfv },
+        { id: 'target_pe' as const, label: 'Target P/E', value: targetPe },
+      ].filter(o => o.value != null && Number.isFinite(o.value)),
+    [normalPeCfv, targetPe],
+  );
   useEffect(() => {
     const defaultGrowthOption = growthOptions.find(g => g.id === 'adjusted_operating') ?? growthOptions[0];
-    const defaultGrowth = defaultGrowthOption?.value ?? 10;
+    const defaultGrowth = clamp(defaultGrowthOption?.value ?? 10, -20, 100);
     setSimGrowthSource(defaultGrowthOption?.id ?? 'custom');
     setSimGrowthPct(Number(defaultGrowth.toFixed(2)));
-    const peDefault = normalPeCfv ?? historicalPe ?? targetPe ?? 15;
+    const peDefault = normalPeCfv ?? targetPe ?? historicalPe ?? 15;
+    const peSourceDefault: SimulationPeSource = normalPeCfv != null ? 'normal_pe' : targetPe != null ? 'target_pe' : 'custom';
+    setSimPeSource(peSourceDefault);
     setSimPe(Number(peDefault.toFixed(2)));
     const defaultPriceOption = simPriceOptions.find(p => p.id === 'market') ?? simPriceOptions[0];
     setSimPriceSource(defaultPriceOption?.id ?? 'custom');
@@ -793,12 +827,24 @@ export default function CompanyEntryPricingPage() {
   const simGrowthSlider = useMemo(() => {
     const fallback = { min: -20, max: 40 };
     const bounds = sliderBounds(simGrowthPct, fallback, 0.6);
-    return { min: bounds.min, max: bounds.max, value: clamp(simGrowthPct, bounds.min, bounds.max) };
+    const max = Math.min(100, bounds.max);
+    const min = Math.min(bounds.min, max);
+    return { min, max, value: clamp(simGrowthPct, min, max) };
   }, [simGrowthPct]);
+  const simTenYearTargetPrice = useMemo(() => {
+    if (!Number.isFinite(simEarningsValue) || simEarningsValue <= 0) return null;
+    if (!Number.isFinite(simGrowthPct) || !Number.isFinite(simPe)) return null;
+    return simEarningsValue * Math.pow(1 + simGrowthPct / 100, 10) * simPe;
+  }, [simEarningsValue, simGrowthPct, simPe]);
+  const activeGrowthSource = useMemo(
+    () => (simGrowthSource === 'custom' ? null : growthOptions.find(opt => opt.id === simGrowthSource) ?? null),
+    [growthOptions, simGrowthSource],
+  );
   const simYearlyProjection = useMemo(() => {
     if (!Number.isFinite(simEarningsValue) || simEarningsValue <= 0) return [];
     if (!Number.isFinite(simGrowthPct) || !Number.isFinite(simPe)) return [];
-    const yr10TargetPrice = simEarningsValue * Math.pow(1 + simGrowthPct / 100, 10) * simPe;
+    const yr10TargetPrice = simTenYearTargetPrice;
+    if (yr10TargetPrice == null || !Number.isFinite(yr10TargetPrice) || yr10TargetPrice <= 0) return [];
     const startPrice = Number.isFinite(simBasePrice) && simBasePrice > 0 ? simBasePrice : null;
     const impliedCagr =
       startPrice != null && yr10TargetPrice > 0 ? impliedCagrPercentFromPrices(startPrice, yr10TargetPrice, 10) : null;
@@ -810,14 +856,14 @@ export default function CompanyEntryPricingPage() {
           : eps * simPe;
       return { year: y, eps, price };
     });
-  }, [simEarningsValue, simGrowthPct, simPe, simBasePrice]);
+  }, [simEarningsValue, simGrowthPct, simPe, simBasePrice, simTenYearTargetPrice]);
   const simChartData = useMemo(() => {
     if (simYearlyProjection.length === 0) return null;
     const width = 400;
-    const height = 108;
+    const height = 180;
     const padX = 6;
-    const topPad = 5;
-    const bottomPad = 20;
+    const topPad = 3;
+    const bottomPad = 12;
     const chartTop = topPad;
     const chartBottom = height - bottomPad;
     const chartH = chartBottom - chartTop;
@@ -839,10 +885,14 @@ export default function CompanyEntryPricingPage() {
     const endPrice = simYearlyProjection[n - 1]?.price ?? 0;
     const xStart = xs[0] ?? padX;
     const xEnd = xs[n - 1] ?? width - padX;
+    const yStart = ys[0] ?? chartBottom;
     const yEnd = ys[n - 1] ?? chartTop;
-    const labelTargetY = yEnd < chartTop + 14 ? yEnd + 12 : yEnd - 8;
-    const labelTargetX = xEnd > width - 48 ? xEnd - 2 : xEnd;
-    const targetLabelAnchor: 'end' | 'middle' = xEnd > width - 48 ? 'end' : 'middle';
+    const labelStartX = Math.min(width - 120, xStart + 8);
+    const labelStartY = Math.max(chartTop + 18, Math.min(chartBottom - 14, yStart + 10));
+    const labelTargetX = width - padX - 8;
+    const labelTargetY = Math.max(chartTop + 12, yEnd + 8);
+    const targetLabelAnchor: 'end' = 'end';
+    const labelPeY = Math.min(height - 10, labelTargetY + 22);
     return {
       width,
       height,
@@ -854,11 +904,15 @@ export default function CompanyEntryPricingPage() {
       maxPrice,
       xStart,
       xEnd,
+      yStart,
       yEnd,
       startPrice,
       endPrice,
+      labelStartX,
+      labelStartY,
       labelTargetY,
       labelTargetX,
+      labelPeY,
       targetLabelAnchor,
     };
   }, [simYearlyProjection]);
@@ -896,6 +950,51 @@ export default function CompanyEntryPricingPage() {
     return { weightedAvgScaleInPrice: weightedSum / unitsTotal, unitsTotal };
   }, [stagedTranchePlan]);
   const weightedScaleInPrice = ladderWeightedAvg?.weightedAvgScaleInPrice ?? null;
+  const weightedScaleInRow = useMemo(() => {
+    if (weightedScaleInPrice == null || !Number.isFinite(weightedScaleInPrice) || weightedScaleInPrice <= 0) return null;
+    const valuation = forwardEps != null && forwardEps !== 0 ? weightedScaleInPrice / forwardEps : null;
+    const pegFwd = valuation != null && forwardGrowth != null && forwardGrowth !== 0 ? valuation / forwardGrowth : null;
+    const downsideRiskPct =
+      lastPrice != null && lastPrice > 0
+        ? (1 - weightedScaleInPrice / lastPrice) * 100
+        : null;
+    const cagrToTenYearTargetPct =
+      tenYearTargetPrice != null && tenYearTargetPrice > 0
+        ? impliedCagrPercentFromPrices(weightedScaleInPrice, tenYearTargetPrice, 10)
+        : null;
+    return {
+      id: 'weighted_scale_in',
+      label: 'Weighted avg scale-in',
+      source: null as MetricPoint | null,
+      gemName: '-',
+      buyPrice: weightedScaleInPrice,
+      valuation,
+      pegFwd,
+      downsideRiskPct,
+      cagrToTenYearTargetPct,
+    };
+  }, [weightedScaleInPrice, forwardEps, forwardGrowth, lastPrice, tenYearTargetPrice]);
+  const buyPriceRowsForDisplay = useMemo(
+    () =>
+      (weightedScaleInRow ? [...buyPriceRowsWithRisk, weightedScaleInRow] : buyPriceRowsWithRisk).map(r => ({
+        ...r,
+        pegFwd:
+          r.valuation != null && forwardGrowth != null && Number.isFinite(forwardGrowth) && forwardGrowth !== 0
+            ? r.valuation / forwardGrowth
+            : null,
+        holdingCagrToSimTargetPct:
+          r.buyPrice != null && r.buyPrice > 0 && simTenYearTargetPrice != null && simTenYearTargetPrice > 0
+            ? impliedCagrPercentFromPrices(r.buyPrice, simTenYearTargetPrice, 10)
+            : null,
+      })),
+    [buyPriceRowsWithRisk, weightedScaleInRow, forwardGrowth, simTenYearTargetPrice],
+  );
+  const simHoldingCagrPct = useMemo(() => {
+    const startPrice = simChartData?.startPrice ?? null;
+    const endPrice = simChartData?.endPrice ?? null;
+    if (startPrice == null || endPrice == null) return null;
+    return impliedCagrPercentFromPrices(startPrice, endPrice, 10);
+  }, [simChartData]);
 
   const loading = gemsLoading || runsLoading || scoresLoading;
   const exportCsv = useCallback(() => {
@@ -910,7 +1009,7 @@ export default function CompanyEntryPricingPage() {
     lines.push(`KPI,10Y Target Price,${fmtNumber(tenYearTargetPrice, 2)},${tenYearTargetMetric?.gemName ?? ''}`);
     lines.push(`KPI,10Y Total CAGR %,${fmtPct(tenYearTotalCagr, 2)},${tenYearTotalCagrMetric?.gemName ?? ''}`);
     lines.push(`KPI,Overall Fundamental Avg,${fmtNumber(overallFundamentalAvg, 2)},`);
-    for (const r of buyPriceRowsWithRisk) {
+    for (const r of buyPriceRowsForDisplay) {
       lines.push(
         `Buy Prices,${r.label},${fmtNumber(r.buyPrice, 2)},${r.gemName === '-' ? '' : r.gemName}`,
         `Buy Prices,${r.label} Valuation (Fwd),${fmtNumber(r.valuation, 2)},${r.gemName === '-' ? '' : r.gemName}`,
@@ -945,7 +1044,7 @@ export default function CompanyEntryPricingPage() {
     tenYearTargetMetric,
     tenYearTotalCagrMetric,
     overallFundamentalAvg,
-    buyPriceRowsWithRisk,
+    buyPriceRowsForDisplay,
     stagedTranchePlan,
     ladderWeightedAvg,
     byMatcher,
@@ -964,7 +1063,7 @@ export default function CompanyEntryPricingPage() {
     lines.push('## Buy Prices And Valuation', '');
     lines.push('| Metric | Buy Price | Valuation (Fwd) | Downside Risk % | 10Y CAGR % |');
     lines.push('|---|---:|---:|---:|---:|');
-    for (const r of buyPriceRowsWithRisk) {
+    for (const r of buyPriceRowsForDisplay) {
       lines.push(
         `| ${r.label} | ${fmtNumber(r.buyPrice, 2)} | ${fmtNumber(r.valuation, 2)} | ${fmtPct(r.downsideRiskPct, 2)} | ${fmtPct(r.cagrToTenYearTargetPct, 2)} |`,
       );
@@ -997,7 +1096,7 @@ export default function CompanyEntryPricingPage() {
     tenYearTargetPrice,
     tenYearTotalCagr,
     overallFundamentalAvg,
-    buyPriceRowsWithRisk,
+    buyPriceRowsForDisplay,
     stagedTranchePlan,
     ladderWeightedAvg,
   ]);
@@ -1022,7 +1121,7 @@ export default function CompanyEntryPricingPage() {
         bitsToVcaTenYearCagr,
         overallFundamentalAvg,
       },
-      buyPrices: buyPriceRowsWithRisk.map(r => ({
+      buyPrices: buyPriceRowsForDisplay.map(r => ({
         metric: r.label,
         buyPrice: r.buyPrice,
         valuationFwd: r.valuation,
@@ -1094,7 +1193,7 @@ export default function CompanyEntryPricingPage() {
     bitsDownsideRisk,
     bitsToVcaTenYearCagr,
     overallFundamentalAvg,
-    buyPriceRowsWithRisk,
+    buyPriceRowsForDisplay,
     targetPe,
     fiveYearValueCompounding,
     fiveYearRevCagr,
@@ -1303,7 +1402,12 @@ export default function CompanyEntryPricingPage() {
 
         <div className="entry-pricing-panel entry-pricing-sim-panel">
           <div className="entry-sim-panel-head">
-            <h3 className="entry-sim-panel-title">Simulation Corner</h3>
+            <h3
+              className="entry-sim-panel-title"
+              title="Simulate a 10-year target price and implied holding return using your selected base price, metric, EPS growth, and P/E."
+            >
+              Simulation Corner
+            </h3>
             <span className="entry-sim-tip" tabIndex={0}>
               ?
               <span className="entry-sim-tip-panel">
@@ -1314,249 +1418,370 @@ export default function CompanyEntryPricingPage() {
           </div>
 
           <div className="entry-sim-layout">
-            <div className="entry-sim-controls">
-              <div className="entry-sim-mega-row" role="group" aria-label="Base price, metric, and P/E">
-            <div className="entry-sim-mega-cell entry-sim-mega-cell--strip">
-              <span className="entry-sim-mega-label">Base</span>
-              <div className="entry-sim-tile-strip">
-                {simPriceOptions.map(opt => {
-                  return (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      title={opt.label}
-                      className={`entry-sim-tile ${simPriceSource === opt.id ? 'active' : ''}`}
-                      onClick={() => {
-                        setSimPriceSource(opt.id);
-                        setSimBasePrice(Number((opt.value ?? 0).toFixed(2)));
-                      }}
-                    >
-                      <span className="entry-sim-tile-title">{opt.label}</span>
-                      <span className="entry-sim-tile-val">{fmtNumber(opt.value ?? null, 2)}</span>
-                    </button>
-                  );
-                })}
-                {weightedScaleInPrice != null ? (
-                  <button
-                    type="button"
-                    title="Weighted avg scale-in price"
-                    className={`entry-sim-tile ${simPriceSource === 'weighted_scale_in' ? 'active' : ''}`}
-                    onClick={() => {
-                      setSimPriceSource('weighted_scale_in');
-                      setSimBasePrice(Number(weightedScaleInPrice.toFixed(2)));
-                    }}
-                  >
-                    <span className="entry-sim-tile-title">Weighted avg scale-in price</span>
-                    <span className="entry-sim-tile-val">{fmtNumber(weightedScaleInPrice, 2)}</span>
-                  </button>
-                ) : null}
-                <input
-                  type="number"
-                  step="0.01"
-                  value={Number.isFinite(simBasePrice) ? simBasePrice : ''}
-                  className="entry-sim-input-tiny"
-                  onChange={e => {
-                    setSimPriceSource('custom');
-                    setSimBasePrice(Number(parseFloat(e.target.value || '0').toFixed(4)));
-                  }}
-                  aria-label="Custom base price"
-                />
-              </div>
-            </div>
-            <div className="entry-sim-mega-cell entry-sim-mega-cell--strip">
-              <span className="entry-sim-mega-label">Metric</span>
-              <div className="entry-sim-tile-strip">
-                {simEarningsTiles.map(tile => {
-                  if (tile.mode === 'custom') {
-                    const active = simEarningsSource === 'custom';
-                    return (
-                      <button
-                        key={tile.key}
-                        type="button"
-                        title={tile.title}
-                        className={`entry-sim-tile ${active ? 'active' : ''}`}
-                        onClick={() => setSimEarningsSource('custom')}
-                      >
-                        <span className="entry-sim-tile-title">{tile.short}</span>
-                      </button>
-                    );
-                  }
-                  if (tile.mode === 'preset') {
-                    const active = simEarningsSource === tile.presetId;
-                    return (
-                      <button
-                        key={tile.key}
-                        type="button"
-                        title={tile.title}
-                        className={`entry-sim-tile ${active ? 'active' : ''}`}
-                        onClick={() => {
-                          setSimEarningsSource(tile.presetId);
-                          setSimEarningsMetricId('');
-                          if (tile.value != null) setSimEarningsValue(Number(tile.value.toFixed(4)));
+            <div className="entry-sim-pane entry-sim-pane--left">
+              <div className="entry-sim-controls">
+                <div className="entry-sim-mega-row" role="group" aria-label="Base price">
+                  <div className="entry-sim-mega-cell entry-sim-mega-cell--strip">
+                    <span className="entry-sim-mega-label" title="Starting price used as Yr 0 for the simulation path.">
+                      Base
+                    </span>
+                    <div className="entry-sim-tile-strip">
+                      {simPriceOptions.map(opt => {
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            title={opt.label}
+                            className={`entry-sim-tile ${simPriceSource === opt.id ? 'active' : ''}`}
+                            onClick={() => {
+                              setSimPriceSource(opt.id);
+                              setSimBasePrice(Number((opt.value ?? 0).toFixed(2)));
+                            }}
+                          >
+                            <span className="entry-sim-tile-title">{opt.label}</span>
+                            <span className="entry-sim-tile-val">{fmtNumber(opt.value ?? null, 2)}</span>
+                          </button>
+                        );
+                      })}
+                      {weightedScaleInPrice != null ? (
+                        <button
+                          type="button"
+                          title="Weighted avg scale-in price"
+                          className={`entry-sim-tile ${simPriceSource === 'weighted_scale_in' ? 'active' : ''}`}
+                          onClick={() => {
+                            setSimPriceSource('weighted_scale_in');
+                            setSimBasePrice(Number(weightedScaleInPrice.toFixed(2)));
+                          }}
+                        >
+                          <span className="entry-sim-tile-title">Weighted avg scale-in price</span>
+                          <span className="entry-sim-tile-val">{fmtNumber(weightedScaleInPrice, 2)}</span>
+                        </button>
+                      ) : null}
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={Number.isFinite(simBasePrice) ? simBasePrice : ''}
+                        className="entry-sim-input-tiny"
+                        onChange={e => {
+                          setSimPriceSource('custom');
+                          setSimBasePrice(Number(parseFloat(e.target.value || '0').toFixed(4)));
                         }}
-                      >
-                        <span className="entry-sim-tile-title">{tile.short}</span>
-                        <span className="entry-sim-tile-val">{fmtNumber(tile.value, 2)}</span>
-                      </button>
-                    );
-                  }
-                  const active = simEarningsSource === 'metric' && simEarningsMetricId === tile.metricId;
-                  return (
-                    <button
-                      key={tile.key}
-                      type="button"
-                      title={tile.title}
-                      className={`entry-sim-tile ${active ? 'active' : ''}`}
-                      onClick={() => {
-                        const metric = simMetricMap.get(tile.metricId ?? '');
-                        setSimEarningsSource('metric');
-                        setSimEarningsMetricId(tile.metricId ?? '');
-                        if (metric?.value != null) setSimEarningsValue(Number(metric.value.toFixed(4)));
-                      }}
-                    >
-                      <span className="entry-sim-tile-title">{tile.short}</span>
-                      <span className="entry-sim-tile-val">{fmtNumber(tile.value, 2)}</span>
-                    </button>
-                  );
-                })}
-                <input
-                  type="number"
-                  step="0.01"
-                  value={Number.isFinite(simEarningsValue) ? simEarningsValue : ''}
-                  className="entry-sim-input-tiny"
-                  onChange={e => {
-                    setSimEarningsSource('custom');
-                    setSimEarningsMetricId('');
-                    setSimEarningsValue(Number(parseFloat(e.target.value || '0').toFixed(4)));
-                  }}
-                  aria-label="Metric value"
-                />
-              </div>
-            </div>
-            <div className="entry-sim-mega-cell entry-sim-mega-cell--pe">
-              <span className="entry-sim-mega-label">P/E</span>
-              <div className="entry-sim-pe-compact">
-                <strong className="entry-sim-pe-num">{fmtNumber(simPe, 2)}</strong>
-                <input
-                  type="range"
-                  min={simPeSlider.min}
-                  max={simPeSlider.max}
-                  step={0.1}
-                  value={simPeSlider.value}
-                  className="sizing-cagr-slider entry-sim-pe-slider"
-                  onChange={e => setSimPe(Number(parseFloat(e.target.value).toFixed(2)))}
-                  aria-label="Simulation P/E slider"
-                />
-                <div className="entry-sim-pe-scale">
-                  <span>{fmtNumber(simPeSlider.min, 0)}</span>
-                  <span>{fmtNumber(simPeSlider.max, 0)}</span>
+                        aria-label="Custom base price"
+                      />
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </div>
-              </div>
 
-              <div className="entry-sim-growth-row" role="group" aria-label="EPS growth source and slider">
-                <span className="entry-sim-mega-label">EPS Growth Source</span>
-                <div className="entry-sim-tile-strip entry-sim-tile-strip--grow">
-                  {growthOptions.map(opt => (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      title={opt.label}
-                      className={`entry-sim-tile entry-sim-tile--growth ${simGrowthSource === opt.id ? 'active' : ''}`}
-                      onClick={() => {
-                        setSimGrowthSource(opt.id);
-                        setSimGrowthPct(Number((opt.value ?? 0).toFixed(2)));
-                      }}
-                    >
-                      <span className="entry-sim-tile-title">{opt.label}</span>
-                      <span className="entry-sim-tile-val">{renderLinkedValue(fmtPct(opt.value ?? null, 1), opt.source ?? null)}</span>
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    title="Custom growth"
-                    className={`entry-sim-tile entry-sim-tile--growth ${simGrowthSource === 'custom' ? 'active' : ''}`}
-                    onClick={() => setSimGrowthSource('custom')}
-                  >
-                    <span className="entry-sim-tile-title">Custom growth</span>
-                    <span className="entry-sim-tile-val">{fmtPct(simGrowthPct, 1)}</span>
-                  </button>
+                <div className="entry-sim-mega-row" role="group" aria-label="Metric">
+                  <div className="entry-sim-mega-cell entry-sim-mega-cell--strip">
+                    <span className="entry-sim-mega-label" title="EPS/earnings input used to project Yr 10 target price.">
+                      Metric
+                    </span>
+                    <div className="entry-sim-tile-strip">
+                      {simEarningsTiles.map(tile => {
+                        if (tile.mode === 'custom') {
+                          const active = simEarningsSource === 'custom';
+                          return (
+                            <button
+                              key={tile.key}
+                              type="button"
+                              title={tile.title}
+                              className={`entry-sim-tile ${active ? 'active' : ''}`}
+                              onClick={() => setSimEarningsSource('custom')}
+                            >
+                              <span className="entry-sim-tile-title">{tile.short}</span>
+                            </button>
+                          );
+                        }
+                        if (tile.mode === 'preset') {
+                          const active = simEarningsSource === tile.presetId;
+                          return (
+                            <button
+                              key={tile.key}
+                              type="button"
+                              title={tile.title}
+                              className={`entry-sim-tile ${active ? 'active' : ''}`}
+                              onClick={() => {
+                                setSimEarningsSource(tile.presetId);
+                                setSimEarningsMetricId('');
+                                if (tile.value != null) setSimEarningsValue(Number(tile.value.toFixed(4)));
+                              }}
+                            >
+                              <span className="entry-sim-tile-title">{tile.short}</span>
+                              <span className="entry-sim-tile-val">{fmtNumber(tile.value, 2)}</span>
+                            </button>
+                          );
+                        }
+                        const active = simEarningsSource === 'metric' && simEarningsMetricId === tile.metricId;
+                        return (
+                          <button
+                            key={tile.key}
+                            type="button"
+                            title={tile.title}
+                            className={`entry-sim-tile ${active ? 'active' : ''}`}
+                            onClick={() => {
+                              const metric = simMetricMap.get(tile.metricId ?? '');
+                              setSimEarningsSource('metric');
+                              setSimEarningsMetricId(tile.metricId ?? '');
+                              if (metric?.value != null) setSimEarningsValue(Number(metric.value.toFixed(4)));
+                            }}
+                          >
+                            <span className="entry-sim-tile-title">{tile.short}</span>
+                            <span className="entry-sim-tile-val">{fmtNumber(tile.value, 2)}</span>
+                          </button>
+                        );
+                      })}
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={Number.isFinite(simEarningsValue) ? simEarningsValue : ''}
+                        className="entry-sim-input-tiny"
+                        onChange={e => {
+                          setSimEarningsSource('custom');
+                          setSimEarningsMetricId('');
+                          setSimEarningsValue(Number(parseFloat(e.target.value || '0').toFixed(4)));
+                        }}
+                        aria-label="Metric value"
+                      />
+                    </div>
+                  </div>
                 </div>
-                <div className="entry-sim-growth-slider">
-                  <span className="entry-sim-growth-slider-val">{fmtPct(simGrowthSlider.value, 1)}</span>
-                  <input
-                    type="range"
-                    min={simGrowthSlider.min}
-                    max={simGrowthSlider.max}
-                    step={0.1}
-                    value={simGrowthSlider.value}
-                    className="sizing-cagr-slider entry-sim-growth-range"
-                    onChange={e => {
-                      setSimGrowthSource('custom');
-                      setSimGrowthPct(Number(parseFloat(e.target.value).toFixed(2)));
-                    }}
-                    aria-label="EPS growth slider"
-                  />
-                  <div className="entry-sim-pe-scale entry-sim-growth-range-scale">
-                    <span>{fmtPct(simGrowthSlider.min, 0)}</span>
-                    <span>{fmtPct(simGrowthSlider.max, 0)}</span>
+
+                <div className="entry-sim-mega-row entry-sim-mega-row--pe" role="group" aria-label="P/E source and slider">
+                  <div className="entry-sim-mega-cell entry-sim-mega-cell--strip">
+                    <span className="entry-sim-mega-label" title="Terminal P/E multiple applied to projected Yr 10 EPS.">
+                      P/E
+                    </span>
+                    <div className="entry-sim-pe-compact">
+                      <div className="entry-sim-pe-source-row" role="group" aria-label="Simulation P/E source">
+                        {peSourceOptions.map(opt => (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            className={`entry-sim-pe-source-btn ${simPeSource === opt.id ? 'active' : ''}`}
+                            onClick={() => {
+                              setSimPeSource(opt.id);
+                              setSimPe(Number((opt.value ?? 0).toFixed(2)));
+                            }}
+                          >
+                            <span className="entry-sim-pe-source-btn-title">{opt.label}</span>
+                            <span className="entry-sim-pe-source-btn-val">{fmtNumber(opt.value ?? null, 2)}</span>
+                          </button>
+                        ))}
+                        <div className={`entry-sim-pe-source-btn entry-sim-pe-source-btn--custom ${simPeSource === 'custom' ? 'active' : ''}`}>
+                          <span className="entry-sim-pe-source-btn-title">Custom P/E</span>
+                          <input
+                            type="number"
+                            step="0.1"
+                            value={Number.isFinite(simPe) ? simPe : ''}
+                            className="entry-sim-input-tiny entry-sim-input-tiny--pe"
+                            onFocus={() => setSimPeSource('custom')}
+                            onChange={e => {
+                              const parsed = parseFloat(e.target.value);
+                              setSimPeSource('custom');
+                              setSimPe(Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : 0);
+                            }}
+                            aria-label="Simulation P/E value"
+                          />
+                        </div>
+                      </div>
+                      <input
+                        type="range"
+                        min={simPeSlider.min}
+                        max={simPeSlider.max}
+                        step={0.1}
+                        value={simPeSlider.value}
+                        className="sizing-cagr-slider entry-sim-pe-slider"
+                        onChange={e => {
+                          setSimPeSource('custom');
+                          setSimPe(Number(parseFloat(e.target.value).toFixed(2)));
+                        }}
+                        aria-label="Simulation P/E slider"
+                      />
+                      <div className="entry-sim-pe-scale">
+                        <span>{fmtNumber(simPeSlider.min, 0)}</span>
+                        <span>{fmtNumber(simPeSlider.max, 0)}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="entry-sim-growth-row" role="group" aria-label="EPS growth source and slider">
+                  <div className="entry-sim-growth-source-row">
+                    <span className="entry-sim-mega-label" title="Annual EPS growth assumption used for 10-year compounding.">
+                      EPS Growth Source
+                    </span>
+                    <div className="entry-sim-tile-strip entry-sim-tile-strip--grow">
+                      {growthOptions.map(opt => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          title={opt.label}
+                          className={`entry-sim-tile entry-sim-tile--growth ${simGrowthSource === opt.id ? 'active' : ''}`}
+                          onClick={() => {
+                            setSimGrowthSource(opt.id);
+                            setSimGrowthPct(Number(clamp(opt.value ?? 0, -20, 100).toFixed(2)));
+                          }}
+                        >
+                          <span className="entry-sim-tile-title">{opt.label}</span>
+                          <span className="entry-sim-tile-val">{renderLinkedValue(fmtPct(opt.value ?? null, 1), opt.source ?? null)}</span>
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        title="Custom growth"
+                        className={`entry-sim-tile entry-sim-tile--growth ${simGrowthSource === 'custom' ? 'active' : ''}`}
+                        onClick={() => setSimGrowthSource('custom')}
+                      >
+                        <span className="entry-sim-tile-title">Custom growth</span>
+                        <input
+                          type="number"
+                          step="0.1"
+                          value={Number.isFinite(simGrowthPct) ? simGrowthPct : ''}
+                          className="entry-sim-input-tiny entry-sim-input-tiny--growth-tile"
+                          onClick={e => {
+                            e.stopPropagation();
+                            setSimGrowthSource('custom');
+                          }}
+                          onChange={e => {
+                            const parsed = parseFloat(e.target.value);
+                            setSimGrowthSource('custom');
+                            setSimGrowthPct(Number.isFinite(parsed) ? Number(clamp(parsed, -20, 100).toFixed(2)) : 0);
+                          }}
+                          aria-label="Custom EPS growth value"
+                        />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="entry-sim-growth-slider entry-sim-growth-slider--below">
+                    <div className="entry-sim-growth-slider-head">
+                      <input
+                        type="number"
+                        step="0.1"
+                        value={Number.isFinite(simGrowthPct) ? simGrowthPct : ''}
+                        className="entry-sim-input-tiny entry-sim-input-tiny--growth"
+                        onChange={e => {
+                          const parsed = parseFloat(e.target.value);
+                          setSimGrowthSource('custom');
+                          setSimGrowthPct(Number.isFinite(parsed) ? Number(clamp(parsed, -20, 100).toFixed(2)) : 0);
+                        }}
+                        aria-label="EPS growth percentage value"
+                      />
+                      <span className="entry-sim-growth-slider-val">%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={simGrowthSlider.min}
+                      max={simGrowthSlider.max}
+                      step={0.1}
+                      value={simGrowthSlider.value}
+                      className="sizing-cagr-slider entry-sim-growth-range"
+                      onChange={e => {
+                        setSimGrowthSource('custom');
+                        setSimGrowthPct(Number(clamp(parseFloat(e.target.value), -20, 100).toFixed(2)));
+                      }}
+                      aria-label="EPS growth slider"
+                    />
+                    <div className="entry-sim-pe-scale entry-sim-growth-range-scale">
+                      <span>{fmtPct(simGrowthSlider.min, 0)}</span>
+                      <span>{fmtPct(simGrowthSlider.max, 0)}</span>
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
-
-            {simChartData ? (
-              <div className="entry-sim-chart-wrap">
-                <div className="entry-sim-chart-heading">Target price path (Yr 0-10)</div>
-                <svg
-                  viewBox={`0 0 ${simChartData.width} ${simChartData.height}`}
-                  className="entry-sim-chart"
-                  role="img"
-                  aria-label="Target price simulation chart"
-                >
-                  <polyline points={simChartData.points} className="entry-sim-chart-line" />
-                  <text x={simChartData.xStart} y={simChartData.height - 14} className="entry-sim-chart-label-svg entry-sim-chart-label-svg--muted">
-                    Yr 0
-                  </text>
-                  <text x={simChartData.xStart} y={simChartData.height - 3} className="entry-sim-chart-label-svg entry-sim-chart-label-svg--value">
-                    {fmtNumber(simChartData.startPrice, 2)}
-                  </text>
-                  <text
-                    x={simChartData.width - simChartData.padX}
-                    y={simChartData.height - 3}
-                    textAnchor="end"
-                    className="entry-sim-chart-label-svg entry-sim-chart-label-svg--muted"
+            <div className="entry-sim-pane entry-sim-pane--right">
+              {simChartData ? (
+                <div className="entry-sim-chart-wrap">
+                  <div
+                    className="entry-sim-chart-heading"
+                    title="Price trajectory from Yr 0 base price to simulated Yr 10 target based on EPS growth and P/E assumptions."
                   >
-                    Yr 10
-                  </text>
-                  <text
-                    x={simChartData.labelTargetX}
-                    y={simChartData.labelTargetY}
-                    textAnchor={simChartData.targetLabelAnchor}
-                    className="entry-sim-chart-label-svg entry-sim-chart-label-svg--target"
+                    Target price path (Yr 0-10)
+                  </div>
+                  <svg
+                    viewBox={`0 0 ${simChartData.width} ${simChartData.height}`}
+                    preserveAspectRatio="none"
+                    className="entry-sim-chart"
+                    role="img"
+                    aria-label="Target price simulation chart"
                   >
-                    {fmtNumber(simChartData.endPrice, 2)}
-                  </text>
-                </svg>
-              </div>
-            ) : (
-              <p className="entry-pricing-caption entry-sim-empty">Add a valid metric value to plot.</p>
-            )}
+                    <polyline points={simChartData.points} className="entry-sim-chart-line" />
+                    <text x={simChartData.labelStartX} y={simChartData.labelStartY} className="entry-sim-chart-label-svg entry-sim-chart-label-svg--muted">
+                      Price
+                    </text>
+                    <text x={simChartData.labelStartX} y={simChartData.labelStartY + 10} className="entry-sim-chart-label-svg entry-sim-chart-label-svg--value">
+                      {fmtNumber(simChartData.startPrice, 2)}
+                    </text>
+                    <text
+                      x={simChartData.width - simChartData.padX}
+                      y={simChartData.height - 3}
+                      textAnchor="end"
+                      className="entry-sim-chart-label-svg entry-sim-chart-label-svg--muted"
+                    >
+                      Yr 10
+                    </text>
+                    <text
+                      x={simChartData.labelTargetX}
+                      y={simChartData.labelTargetY}
+                      textAnchor={simChartData.targetLabelAnchor}
+                      className="entry-sim-chart-label-svg entry-sim-chart-label-svg--target"
+                    >
+                      Tgt price
+                    </text>
+                    <text
+                      x={simChartData.labelTargetX}
+                      y={simChartData.labelTargetY + 10}
+                      textAnchor={simChartData.targetLabelAnchor}
+                      className="entry-sim-chart-label-svg entry-sim-chart-label-svg--value"
+                    >
+                      {fmtNumber(simChartData.endPrice, 2)}
+                    </text>
+                    <text
+                      x={simChartData.labelTargetX}
+                      y={simChartData.labelPeY}
+                      textAnchor={simChartData.targetLabelAnchor}
+                      className="entry-sim-chart-label-svg entry-sim-chart-label-svg--muted"
+                    >
+                      {`PE = ${fmtNumber(simPe, 2)}`}
+                    </text>
+                  </svg>
+                  <div className="entry-sim-chart-meta">
+                    <span className="entry-sim-chart-meta-item">
+                      Price = <strong>{fmtNumber(simChartData.startPrice, 2)}</strong>
+                    </span>
+                    <span className="entry-sim-chart-meta-item">
+                      Tgt price = <strong>{fmtNumber(simChartData.endPrice, 2)}</strong>
+                    </span>
+                    <span className="entry-sim-chart-meta-item">
+                      EPS CAGR = <strong>{renderLinkedValue(fmtPct(simGrowthPct, 1), activeGrowthSource?.source ?? null)}</strong>
+                    </span>
+                    <span className="entry-sim-chart-meta-item entry-sim-chart-meta-item--highlight">
+                      Holding CAGR (10Y) = <strong>{fmtPct(simHoldingCagrPct, 2)}</strong>
+                    </span>
+                    <span className="entry-sim-chart-meta-item">
+                      PE = <strong>{fmtNumber(simPe, 2)}</strong>
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <p className="entry-pricing-caption entry-sim-empty">Add a valid metric value to plot.</p>
+              )}
+            </div>
           </div>
         </div>
       </div>
 
       <div className="entry-pricing-panel">
-        <h3>EPS And Valuation Summary</h3>
+        <h3 title="Quick reference of EPS, PE, growth, and PEG from key metrics.">EPS And Valuation Summary</h3>
         <table className="entry-mini-table">
           <thead>
             <tr>
-              <th>Line Item</th>
-              <th>EPS</th>
-              <th>PE</th>
-              <th>Growth</th>
-              <th>PEG</th>
+              <th title="Summary line item from key EPS/valuation frameworks.">Line Item</th>
+              <th title="Earnings per share metric used for each line item.">EPS</th>
+              <th title="Price-to-earnings ratio for the corresponding EPS basis.">PE</th>
+              <th title="Growth rate used in the corresponding PEG calculation.">Growth</th>
+              <th title="PEG ratio (PE divided by growth).">PEG</th>
             </tr>
           </thead>
           <tbody>
@@ -1593,21 +1818,25 @@ export default function CompanyEntryPricingPage() {
       </div>
 
       <div className="entry-pricing-panel">
-        <h3>Buy Prices And Their Valuation</h3>
+        <h3 title="Compares each buy price with forward valuation, downside, and CAGR outcomes.">Buy Prices And Their Valuation</h3>
         <p className="entry-pricing-caption">Valuation = Buy price / Forward EPS. Rows are fixed to the 4 buy metrics.</p>
         <div className="entry-pricing-table-wrap">
           <table className="scores-table entry-pricing-table">
             <thead>
               <tr>
-                <th>Metric</th>
-                <th>Buy Price</th>
-                <th>Valuation (Fwd)</th>
-                <th>Downside Risk %</th>
-                <th>10Y CAGR % To VCA Target</th>
+                <th title="Buy-price framework or source row.">Metric</th>
+                <th title="Buy price used for valuation and CAGR calculations.">Buy Price</th>
+                <th title="Forward PE at buy price (Buy Price / Forward EPS).">PE (Fwd)</th>
+                <th title="Forward PEG at buy price (Forward PE / Forward growth %).">PEG (Fwd)</th>
+                <th title="Downside risk from current market price to row buy price.">Downside Risk %</th>
+                <th title="Implied 10-year CAGR from row buy price to VCA 10-year target price.">10Y CAGR % To VCA Target</th>
+                <th title="Holding CAGR from row buy price to Simulation Corner 10Y target price (based on selected metric, growth, and P/E).">
+                  10Y Holding CAGR % To Sim Target
+                </th>
               </tr>
             </thead>
             <tbody>
-              {buyPriceRowsWithRisk.map(r => (
+              {buyPriceRowsForDisplay.map(r => (
                 <tr key={r.id}>
                   <td>
                     <span
@@ -1618,8 +1847,10 @@ export default function CompanyEntryPricingPage() {
                   </td>
                   <td>{renderLinkedValue(fmtNumber(r.buyPrice, 2), r.source ?? null)}</td>
                   <td>{renderLinkedValue(fmtNumber(r.valuation, 2), r.source ?? null)}</td>
+                  <td>{renderLinkedValue(fmtNumber(r.pegFwd, 2), r.source ?? null)}</td>
                   <td>{renderLinkedValue(fmtPct(r.downsideRiskPct, 2), r.source ?? null)}</td>
                   <td>{renderLinkedValue(fmtPct(r.cagrToTenYearTargetPct, 2), r.source ?? null)}</td>
+                  <td>{fmtPct(r.holdingCagrToSimTargetPct, 2)}</td>
                 </tr>
               ))}
             </tbody>

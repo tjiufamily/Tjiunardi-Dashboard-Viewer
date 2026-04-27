@@ -67,6 +67,7 @@ const LS_SIZING_STAGE_TOGGLES = 'tjiunardi.dashboard.sizing.stageToggles.v1';
 const LS_SIZING_FORM = 'tjiunardi.dashboard.sizing.form.v1';
 const LS_SIZING_FAVOURITES = 'tjiunardi.dashboard.sizing.favourites.v1';
 const LS_SIZING_SAFETY = 'tjiunardi.dashboard.sizing.safety.v1';
+const LS_LAST_SELECTED_COMPANY = 'tjiunardi.dashboard.lastSelectedCompanyId.v1';
 const MAX_FAVOURITES = 7;
 
 /** Cap 10Y target slider and inputs vs current quote so bad gem data cannot explode the range. */
@@ -383,6 +384,16 @@ export default function PositionSizingPage() {
   }, [cagr, vcaOpts]);
 
   const [companyFilter, setCompanyFilter] = useState('');
+  const companySearchOptions = useMemo(
+    () =>
+      companyScores.map(c => ({
+        id: c.companyId,
+        companyName: c.companyName,
+        ticker: c.ticker,
+        label: `${c.companyName} (${c.ticker})`,
+      })),
+    [companyScores],
+  );
   const displayCompanies = useMemo(() => {
     const q = companyFilter.trim().toLowerCase();
     let list = companyScores;
@@ -499,8 +510,17 @@ export default function PositionSizingPage() {
     if (vcaOpts.tenYearTargetPrice == null || vcaOpts.tenYearTargetPrice <= 0) return;
     let def = vcaOpts.tenYearTargetPrice;
     if (tenYearTargetHardCap != null && def > tenYearTargetHardCap) def = tenYearTargetHardCap;
-    setTenYearTargetPrice(Number(def.toFixed(4)).toString());
-  }, [vcaOpts.tenYearTargetPrice, tenYearTargetHardCap]);
+    const next = Number(def.toFixed(4)).toString();
+    setTenYearTargetPrice(next);
+    setCagrSource('implied');
+    if (effectiveCurrentPrice != null && effectiveCurrentPrice > 0) {
+      const implied = impliedCagrPercentFromPrices(effectiveCurrentPrice, def, 10);
+      if (implied != null && Number.isFinite(implied)) setCagr(Number(implied.toFixed(4)).toString());
+      else setCagr('');
+    } else {
+      setCagr('');
+    }
+  }, [vcaOpts.tenYearTargetPrice, tenYearTargetHardCap, effectiveCurrentPrice]);
 
   /** When CAGR source is Implied (price → 10Y target), keep the left-column target aligned with the CAGR slider. */
   const syncTenYearTargetFromCagrInput = useCallback(
@@ -516,6 +536,23 @@ export default function PositionSizingPage() {
       if (t == null) return;
       if (tenYearTargetHardCap != null && t > tenYearTargetHardCap) t = tenYearTargetHardCap;
       setTenYearTargetPrice(Number(t.toFixed(4)).toString());
+    },
+    [effectiveCurrentPrice, tenYearTargetHardCap],
+  );
+  const syncCagrFromTenYearTargetInput = useCallback(
+    (targetStr: string) => {
+      if (effectiveCurrentPrice == null || effectiveCurrentPrice <= 0) return;
+      if (targetStr.trim() === '') {
+        setCagr('');
+        return;
+      }
+      const target = parseFloat(targetStr);
+      if (!Number.isFinite(target) || target <= 0) return;
+      const cappedTarget =
+        tenYearTargetHardCap != null && target > tenYearTargetHardCap ? tenYearTargetHardCap : target;
+      const implied = impliedCagrPercentFromPrices(effectiveCurrentPrice, cappedTarget, 10);
+      if (implied == null || !Number.isFinite(implied)) return;
+      setCagr(Number(implied.toFixed(4)).toString());
     },
     [effectiveCurrentPrice, tenYearTargetHardCap],
   );
@@ -828,6 +865,9 @@ export default function PositionSizingPage() {
           if (typeof o.downside === 'string') setDownside(o.downside);
           if (typeof o.downsidePrice === 'string') setDownsidePrice(o.downsidePrice);
           if (o.downsideLead === 'pct' || o.downsideLead === 'price') setDownsideLead(o.downsideLead);
+        } else {
+          const persistedCompanyId = localStorage.getItem(LS_LAST_SELECTED_COMPANY) ?? '';
+          if (persistedCompanyId) setSelectedCompanyId(persistedCompanyId);
         }
       } catch {
         /* ignore */
@@ -881,6 +921,14 @@ export default function PositionSizingPage() {
       /* ignore */
     }
   }, [selectedCompanyId, cagr, cagrSource, tenYearTargetPrice, downside, downsidePrice, downsideLead]);
+  useEffect(() => {
+    if (!selectedCompanyId) return;
+    try {
+      localStorage.setItem(LS_LAST_SELECTED_COMPANY, selectedCompanyId);
+    } catch {
+      /* ignore */
+    }
+  }, [selectedCompanyId]);
 
   /** When no CAGR in URL, fill from Value Compounding Analyst metrics (default: implied from price → 10Y target). */
   useEffect(() => {
@@ -963,6 +1011,20 @@ export default function PositionSizingPage() {
       setSearchParams(next);
     }
   };
+  const handleCompanyFilterInput = useCallback(
+    (rawValue: string) => {
+      setCompanyFilter(rawValue);
+      const q = rawValue.trim().toLowerCase();
+      if (!q) return;
+      const exact = companySearchOptions.find(
+        c => c.ticker.toLowerCase() === q || c.companyName.toLowerCase() === q || c.label.toLowerCase() === q,
+      );
+      if (exact && exact.id !== selectedCompanyId) {
+        handleCompanyChange(exact.id);
+      }
+    },
+    [companySearchOptions, selectedCompanyId, handleCompanyChange],
+  );
 
   const selectedIsFavourite = useMemo(
     () => favourites.some(f => f.companyId === selectedCompanyId),
@@ -1435,10 +1497,16 @@ export default function PositionSizingPage() {
             type="search"
             placeholder="Search name or ticker…"
             value={companyFilter}
-            onChange={e => setCompanyFilter(e.target.value)}
+            onChange={e => handleCompanyFilterInput(e.target.value)}
             className="sizing-input sizing-company-search"
+            list="sizing-company-search-options"
             aria-label="Filter companies by name or ticker"
           />
+          <datalist id="sizing-company-search-options">
+            {companySearchOptions.map(c => (
+              <option key={c.id} value={c.label} />
+            ))}
+          </datalist>
           <select
             value={selectedCompanyId}
             onChange={e => handleCompanyChange(e.target.value)}
@@ -1539,7 +1607,12 @@ export default function PositionSizingPage() {
                     min={0}
                     placeholder="e.g. 200"
                     value={tenYearTargetPrice}
-                    onChange={e => setTenYearTargetPrice(e.target.value)}
+                    onChange={e => {
+                      const next = e.target.value;
+                      setTenYearTargetPrice(next);
+                      setCagrSource('implied');
+                      syncCagrFromTenYearTargetInput(next);
+                    }}
                     className="sizing-input"
                     aria-label="10 year target price"
                   />
@@ -1550,7 +1623,12 @@ export default function PositionSizingPage() {
                     step={0.1}
                     value={targetPriceSliderConfig.value}
                     className="sizing-cagr-slider"
-                    onChange={e => setTenYearTargetPrice(Number(parseFloat(e.target.value).toFixed(4)).toString())}
+                    onChange={e => {
+                      const next = Number(parseFloat(e.target.value).toFixed(4)).toString();
+                      setTenYearTargetPrice(next);
+                      setCagrSource('implied');
+                      syncCagrFromTenYearTargetInput(next);
+                    }}
                     aria-label="10 year target price slider"
                   />
                   <div className="sizing-cagr-slider-scale">
@@ -1705,9 +1783,8 @@ export default function PositionSizingPage() {
               onChange={e => {
                 const s = e.target.value;
                 setCagr(s);
-                if (cagrSource === 'implied') {
-                  syncTenYearTargetFromCagrInput(s);
-                } else {
+                syncTenYearTargetFromCagrInput(s);
+                if (cagrSource !== 'implied') {
                   setCagrSource('custom');
                 }
               }}
@@ -1728,9 +1805,8 @@ export default function PositionSizingPage() {
                 onChange={e => {
                   const next = Number(parseFloat(e.target.value).toFixed(4)).toString();
                   setCagr(next);
-                  if (cagrSource === 'implied') {
-                    syncTenYearTargetFromCagrInput(next);
-                  } else {
+                  syncTenYearTargetFromCagrInput(next);
+                  if (cagrSource !== 'implied') {
                     setCagrSource('custom');
                   }
                 }}

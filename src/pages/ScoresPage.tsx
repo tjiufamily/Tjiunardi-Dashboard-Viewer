@@ -180,7 +180,7 @@ export default function ScoresPage() {
               <th className="sticky-after-action" onClick={() => toggleSort('name')}>
                 Company{arrow('name')}
               </th>
-              <th onClick={() => toggleSort('ticker')}>Ticker{arrow('ticker')}</th>
+              <th onClick={() => toggleSort('ticker')}>Ticker entry prices{arrow('ticker')}</th>
               {QUALITY_SCORE_TYPES.map(st => (
                 <th
                   key={st}
@@ -312,7 +312,15 @@ export default function ScoresPage() {
                       {c.companyName}
                     </Link>
                   </td>
-                  <td className="ticker-cell">{c.ticker}</td>
+                  <td className="ticker-cell">
+                    <Link
+                      className="scores-company-link"
+                      to={`/entry-pricing?company=${encodeURIComponent(c.companyId)}`}
+                      state={{ from: returnTo }}
+                    >
+                      {c.ticker}
+                    </Link>
+                  </td>
                   {QUALITY_SCORE_TYPES.map(st => (
                     <td key={st} className={scoreCellClass(c.scores[st])}>
                       {fmt(c.scores[st])}
