@@ -131,6 +131,8 @@ const STAGED_COL_TIP = {
     'Tip: Portfolio % this tranche. Formula: (Stage 3 %) × (units ÷ 10). Four rows sum to Stage 3 %.',
   cagrToTenYearTarget:
     'Tip: CAGR (annualized) from this row’s scale-in price to your 10Y target price over 10 years.',
+  peFwd:
+    'Tip: Forward PE at this row price. Formula: Scale-in price ÷ Forward EPS.',
 } as const;
 
 /** Native `title` tooltips — custom CSS panels are clipped by the table scroll container. */
@@ -184,6 +186,25 @@ function isAdjustedOperatingEarningsGrowthRateMetric(label: string, storageKey: 
   const hasGrowth = /\bgrowth\b|\brate\b|%|percent|pct/.test(s);
   const hasOperating = /\boperating\b/.test(s);
   return hasAdjusted && hasEarnings && hasGrowth && (hasOperating || /adj.*earn.*growth/.test(s));
+}
+
+function normalizedMetricsText(label: string, storageKey: string): string {
+  return `${label} ${storageKey}`
+    .toLowerCase()
+    .replace(/×/g, 'x')
+    .replace(/[‐‑‒–—−]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isForwardEpsMetric(label: string, storageKey: string): boolean {
+  const s = normalizedMetricsText(label, storageKey);
+  return /\b(forward|fwd)\b/.test(s) && /\beps\b/.test(s) && !/\b2\s*(yr|year)\b/.test(s);
+}
+
+function isCurrentYearEpsMetric(label: string, storageKey: string): boolean {
+  const s = normalizedMetricsText(label, storageKey);
+  return /current/.test(s) && /year/.test(s) && /eps/.test(s);
 }
 
 /** Value the "Implied" preset applies (implied CAGR, or fallback chain). */
@@ -315,7 +336,6 @@ export default function PositionSizingPage() {
     }
     return null;
   }, [selectedCompanyId, companyRuns, gems]);
-
   const { bitsTargetPrice, latestBitsRun } = useMemo(() => {
     if (!selectedCompanyId || bitsGems.length === 0)
       return { bitsTargetPrice: null as number | null, latestBitsRun: undefined as GemRun | undefined };
@@ -1306,6 +1326,32 @@ export default function PositionSizingPage() {
     const v = parseFloat(downsidePrice);
     return downsidePrice.trim() !== '' && Number.isFinite(v) && v > 0 ? v : null;
   }, [downsidePrice]);
+  const downsideValuationInputs = useMemo(() => {
+    let currentYearEps: number | null = null;
+    let forwardEps: number | null = null;
+    if (selectedCompanyId && companyRuns.length > 0 && gems.length > 0) {
+      for (const gem of gems) {
+        const run = latestRunForGem(companyRuns, gem.id);
+        if (!run?.captured_metrics) continue;
+        const keys = metricStorageKeysForGem(gem, [run]);
+        for (const key of keys) {
+          const v = run.captured_metrics[key];
+          if (typeof v !== 'number' || !Number.isFinite(v)) continue;
+          const label = labelForMetricKey(gem, key);
+          if (currentYearEps == null && isCurrentYearEpsMetric(label, key)) currentYearEps = v;
+          if (forwardEps == null && isForwardEpsMetric(label, key)) forwardEps = v;
+          if (currentYearEps != null && forwardEps != null) break;
+        }
+        if (currentYearEps != null && forwardEps != null) break;
+      }
+    }
+    const downsidePx = downsideAnchorPrice;
+    const currentPeFromDownside =
+      downsidePx != null && currentYearEps != null && currentYearEps > 0 ? downsidePx / currentYearEps : null;
+    const forwardPeFromDownside =
+      downsidePx != null && forwardEps != null && forwardEps > 0 ? downsidePx / forwardEps : null;
+    return { currentYearEps, forwardEps, currentPeFromDownside, forwardPeFromDownside };
+  }, [selectedCompanyId, companyRuns, gems, downsideAnchorPrice]);
 
   const stagedTranchePlan = useMemo(() => {
     if (!result) return null;
@@ -2049,28 +2095,54 @@ export default function PositionSizingPage() {
                 </span>
               </div>
               <div className="sizing-downside-derived-list">
-                {downsideToVcaTenYearCagr != null ? (
-                  <span className="sizing-downside-derived-metric">
-                    <span className="sizing-inline-tip" tabIndex={0}>
-                      10 Y CAGR % from Downside Price to Target Price:{' '}
-                      <strong>{fmtPct(downsideToVcaTenYearCagr, 2)}</strong>
-                      <span className="sizing-inline-tip-panel">
-                        Annualized 10-year return if your entry is the Downside Price and exit is the Value Compounding
-                        Analyst 10Y target price.
+                <div className="sizing-downside-derived-col">
+                  {downsideValuationInputs.currentYearEps != null ? (
+                    <span className="sizing-downside-derived-metric">
+                      Current EPS: <strong>{fmt(downsideValuationInputs.currentYearEps, 2)}</strong>
+                    </span>
+                  ) : null}
+                  {downsideValuationInputs.currentPeFromDownside != null ? (
+                    <span className="sizing-downside-derived-metric">
+                      Current PE @ Downside Price: <strong>{fmt(downsideValuationInputs.currentPeFromDownside, 2)}</strong>
+                    </span>
+                  ) : null}
+                </div>
+                <div className="sizing-downside-derived-col">
+                  {downsideValuationInputs.forwardEps != null ? (
+                    <span className="sizing-downside-derived-metric">
+                      Forward EPS: <strong>{fmt(downsideValuationInputs.forwardEps, 2)}</strong>
+                    </span>
+                  ) : null}
+                  {downsideValuationInputs.forwardPeFromDownside != null ? (
+                    <span className="sizing-downside-derived-metric">
+                      Forward PE @ Downside Price: <strong>{fmt(downsideValuationInputs.forwardPeFromDownside, 2)}</strong>
+                    </span>
+                  ) : null}
+                </div>
+                <div className="sizing-downside-derived-col">
+                  {downsideToVcaTenYearCagr != null ? (
+                    <span className="sizing-downside-derived-metric">
+                      <span className="sizing-inline-tip" tabIndex={0}>
+                        10 Y CAGR % from Downside Price to Target Price:{' '}
+                        <strong>{fmtPct(downsideToVcaTenYearCagr, 2)}</strong>
+                        <span className="sizing-inline-tip-panel">
+                          Annualized 10-year return if your entry is the Downside Price and exit is the Value Compounding
+                          Analyst 10Y target price.
+                        </span>
                       </span>
                     </span>
-                  </span>
-                ) : null}
-                {downsideToTargetExpectedReturn != null ? (
-                  <span className="sizing-downside-derived-metric sizing-downside-tooltip" tabIndex={0}>
-                    Upside from downside entry to 10 Y target:{' '}
-                    <strong>{fmtPct(downsideToTargetExpectedReturn, 2)}</strong>
-                    <span className="sizing-downside-tooltip-panel">
-                      If you can enter near your downside price and the thesis reaches the Value Compounding Analyst 10Y
-                      target, this is the total upside over the full period.
+                  ) : null}
+                  {downsideToTargetExpectedReturn != null ? (
+                    <span className="sizing-downside-derived-metric sizing-downside-tooltip" tabIndex={0}>
+                      Upside from downside entry to 10 Y target:{' '}
+                      <strong>{fmtPct(downsideToTargetExpectedReturn, 2)}</strong>
+                      <span className="sizing-downside-tooltip-panel">
+                        If you can enter near your downside price and the thesis reaches the Value Compounding Analyst 10Y
+                        target, this is the total upside over the full period.
+                      </span>
                     </span>
-                  </span>
-                ) : null}
+                  ) : null}
+                </div>
               </div>
             </div>
             {selectedCompanyId && !quotesLoading && (effectiveCurrentPrice == null || effectiveCurrentPrice <= 0) ? (
@@ -2917,6 +2989,9 @@ export default function PositionSizingPage() {
                           tip={STAGED_COL_TIP.cagrToTenYearTarget}
                         />
                       </th>
+                      <th scope="col" className="num">
+                        <StagedColHead label="PE (Fwd)" tip={STAGED_COL_TIP.peFwd} />
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2952,6 +3027,13 @@ export default function PositionSizingPage() {
                               })()
                             : '—'}
                         </StagedTd>
+                        <StagedTd tip={STAGED_COL_TIP.peFwd} className="num">
+                          {r.price != null &&
+                          downsideValuationInputs.forwardEps != null &&
+                          downsideValuationInputs.forwardEps > 0
+                            ? fmt(r.price / downsideValuationInputs.forwardEps, 2)
+                            : '—'}
+                        </StagedTd>
                       </tr>
                     ))}
                   </tbody>
@@ -2979,6 +3061,15 @@ export default function PositionSizingPage() {
                         <strong>
                           {ladderWeightedAvg != null && ladderWeightedAvg.cagrToTenYearTarget != null
                             ? fmtPct(ladderWeightedAvg.cagrToTenYearTarget, 2)
+                            : '—'}
+                        </strong>
+                      </td>
+                      <td className="num">
+                        <strong>
+                          {ladderWeightedAvg?.weightedAvgScaleInPrice != null &&
+                          downsideValuationInputs.forwardEps != null &&
+                          downsideValuationInputs.forwardEps > 0
+                            ? fmt(ladderWeightedAvg.weightedAvgScaleInPrice / downsideValuationInputs.forwardEps, 2)
                             : '—'}
                         </strong>
                       </td>

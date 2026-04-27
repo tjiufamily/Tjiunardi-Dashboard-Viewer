@@ -3005,16 +3005,28 @@ a.gem-companies-link:hover {
 .sizing-downside-pct-wrap .sizing-input,
 .sizing-downside-price-wrap .sizing-input { min-width: 112px; width: 100%; }
 .sizing-downside-derived-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px 12px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.sizing-downside-derived-list .sizing-downside-derived-metric {
+  min-width: 0;
+}
+.sizing-downside-derived-col {
   display: flex;
   flex-direction: column;
   gap: 5px;
-  padding-top: 8px;
-  border-top: 1px dashed var(--border);
+  min-width: 0;
 }
 @media (max-width: 720px) {
   .sizing-company-label-row {
     align-items: flex-start;
     flex-direction: column;
+  }
+  .sizing-downside-derived-list {
+    grid-template-columns: 1fr;
   }
 }
 .sizing-downside-derived-metric {

@@ -729,7 +729,14 @@ export default function CompaniesPage() {
                   }
                 >
                   <div className="company-card-header">
-                    <span className="company-ticker">{company.ticker}</span>
+                    <Link
+                      to={`/entry-pricing?company=${encodeURIComponent(company.id)}`}
+                      className="company-ticker"
+                      title={`Open Entry Pricing for ${company.name}`}
+                      onClick={e => e.stopPropagation()}
+                    >
+                      {company.ticker}
+                    </Link>
                     <div className="company-card-header-badges">
                       {company.investor_relations_url ? (
                         <a

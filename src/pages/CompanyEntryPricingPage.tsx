@@ -47,6 +47,7 @@ type SimulationEarningsSource = 'current_eps' | 'forward_eps' | 'two_y_fwd_eps' 
 type SimulationPeSource = 'normal_pe' | 'target_pe' | 'custom';
 const LS_ENTRY_PRICING_FAVOURITES = 'tjiunardi.dashboard.entryPricing.favourites.v1';
 const LS_LAST_SELECTED_COMPANY = 'tjiunardi.dashboard.lastSelectedCompanyId.v1';
+const LS_SIZING_FORM = 'tjiunardi.dashboard.sizing.form.v1';
 const MAX_FAVOURITES = 7;
 const STAGED_COL_TIP = {
   drawdown:
@@ -61,6 +62,8 @@ const STAGED_COL_TIP = {
     'Tip: Portfolio % this tranche. Formula: (Stage 3 %) × (units ÷ 10). Four rows sum to Stage 3 %.',
   cagrToTenYearTarget:
     'Tip: CAGR (annualized) from this row’s scale-in price to your 10Y target price over 10 years.',
+  peFwd:
+    'Tip: Forward PE at this row price. Formula: Scale-in price ÷ Forward EPS.',
 } as const;
 
 function StagedColHead({ label, tip }: { label: string; tip: string }) {
@@ -739,6 +742,11 @@ export default function CompanyEntryPricingPage() {
     [currentYearEps, forwardEps, twoYearFwdEps, adjustedEarnings],
   );
   const simEarningsTiles = useMemo(() => {
+    const presetLabelKeys = new Set(
+      simEarningsPresetOptions
+        .map(o => o.label.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim())
+        .filter(Boolean),
+    );
     const presets = simEarningsPresetOptions.map(o => ({
       key: `preset:${o.id}`,
       mode: 'preset' as const,
@@ -754,7 +762,11 @@ export default function CompanyEntryPricingPage() {
       title: p.label,
       short: p.label,
       value: p.value,
-    }));
+    }))
+      .filter(tile => {
+        const normalized = tile.title.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        return normalized ? !presetLabelKeys.has(normalized) : true;
+      });
     return [
       ...presets,
       ...metrics,
@@ -936,7 +948,20 @@ export default function CompanyEntryPricingPage() {
           safetyPremortemGateRules: DEFAULT_PREMORTEM_GATE_RULES,
         })
       : null;
-  const downsideAnchorPrice = buyPriceRows.find(r => r.id === 'blood')?.buyPrice ?? null;
+  const downsideAnchorPrice = useMemo(() => {
+    const fallback = buyPriceRows.find(r => r.id === 'blood')?.buyPrice ?? null;
+    try {
+      const raw = localStorage.getItem(LS_SIZING_FORM);
+      if (!raw) return fallback;
+      const parsed = JSON.parse(raw) as { selectedCompanyId?: string; downsidePrice?: string };
+      if (parsed?.selectedCompanyId !== selectedCompanyId) return fallback;
+      const v = parseFloat(parsed?.downsidePrice ?? '');
+      if (Number.isFinite(v) && v > 0) return v;
+      return fallback;
+    } catch {
+      return fallback;
+    }
+  }, [buyPriceRows, selectedCompanyId]);
   const stagedTranchePlan = useMemo(() => {
     if (!positionSizingResult) return null;
     return computeStagedTranchePlan(positionSizingResult.afterProbability, downsideAnchorPrice);
@@ -1937,7 +1962,8 @@ export default function CompanyEntryPricingPage() {
       <div className="entry-pricing-panel">
         <h3>Anti-Martingale Ladder Buy Prices</h3>
         <p className="entry-pricing-caption">
-          Downside anchor uses Blood in the Streets target price. Stage 3 cap from default Position Sizing rules.
+          Downside anchor syncs with Position Sizing Expected Downside price for this company (fallback: Blood in the Streets target price).
+          Stage 3 cap from default Position Sizing rules.
         </p>
         <div className="entry-pricing-table-wrap">
           <table className="scores-table entry-pricing-table">
@@ -1949,12 +1975,13 @@ export default function CompanyEntryPricingPage() {
                 <th><StagedColHead label="Scale-In Price" tip={STAGED_COL_TIP.scaleInPrice} /></th>
                 <th><StagedColHead label="Portfolio Allocation %" tip={STAGED_COL_TIP.portfolioPct} /></th>
                 <th><StagedColHead label="CAGR To 10Y Target" tip={STAGED_COL_TIP.cagrToTenYearTarget} /></th>
+                <th><StagedColHead label="PE (Fwd)" tip={STAGED_COL_TIP.peFwd} /></th>
               </tr>
             </thead>
             <tbody>
               {!stagedTranchePlan ? (
                 <tr>
-                  <td colSpan={6} className="empty-row">Ladder unavailable for current company.</td>
+                  <td colSpan={7} className="empty-row">Ladder unavailable for current company.</td>
                 </tr>
               ) : (
                 <>
@@ -1968,6 +1995,11 @@ export default function CompanyEntryPricingPage() {
                       <StagedTd tip={STAGED_COL_TIP.cagrToTenYearTarget} className="num">
                         {r.price != null && tenYearTargetPrice != null && tenYearTargetPrice > 0
                           ? fmtPct(impliedCagrPercentFromPrices(r.price, tenYearTargetPrice, 10), 2)
+                          : '-'}
+                      </StagedTd>
+                      <StagedTd tip={STAGED_COL_TIP.peFwd} className="num">
+                        {r.price != null && forwardEps != null && forwardEps > 0
+                          ? fmtNumber(r.price / forwardEps, 2)
                           : '-'}
                       </StagedTd>
                     </tr>
@@ -1995,6 +2027,13 @@ export default function CompanyEntryPricingPage() {
                       <strong>
                         {ladderWeightedAvg?.weightedAvgScaleInPrice != null && tenYearTargetPrice != null && tenYearTargetPrice > 0
                           ? fmtPct(impliedCagrPercentFromPrices(ladderWeightedAvg.weightedAvgScaleInPrice, tenYearTargetPrice, 10), 2)
+                          : '-'}
+                      </strong>
+                    </td>
+                    <td className="num">
+                      <strong>
+                        {ladderWeightedAvg?.weightedAvgScaleInPrice != null && forwardEps != null && forwardEps > 0
+                          ? fmtNumber(ladderWeightedAvg.weightedAvgScaleInPrice / forwardEps, 2)
                           : '-'}
                       </strong>
                     </td>
