@@ -11,6 +11,9 @@ import { isQuoteFresh, loadQuoteCache, loadQuoteCacheMeta, upsertQuoteCache } fr
 const FINNHUB_GAP_MS = 1100;
 const GEMINI_GAP_MS = 600;
 const GEMINI_EXTRA_GAP_MS = 500;
+const WEB_NO_FINNHUB_CONCURRENCY = 4;
+const WEB_NO_FINNHUB_CONCURRENCY_MIN = 1;
+const WEB_NO_FINNHUB_CONCURRENCY_MAX = 8;
 const QUOTE_LAST_REFRESHED_KEY = 'tjiunardi.dashboard.quoteCache.lastRefreshedAt.v1';
 const QUOTE_FRESH_MS = 24 * 60 * 60 * 1000; // 24 hours (yesterday close is acceptable)
 const AUTO_REFRESH_MS = 24 * 60 * 60 * 1000; // 24 hours auto-refresh cadence
@@ -23,7 +26,16 @@ export type TickerInfo = { ticker: string; name?: string };
 /** In-memory session cache: survives tab switches without re-fetching. */
 const sessionQuoteCache = new Map<string, number>();
 /** Prevent duplicate in-flight fetches for the same ticker. */
-const inFlightQuoteFetch = new Map<string, Promise<number | null>>();
+const inFlightQuoteFetch = new Map<string, Promise<{ price: number | null; usedFinnhub: boolean }>>();
+
+function resolveWebConcurrency(): number {
+  const raw = Number(import.meta.env.VITE_QUOTE_CONCURRENCY);
+  if (!Number.isFinite(raw)) return WEB_NO_FINNHUB_CONCURRENCY;
+  const n = Math.trunc(raw);
+  if (n < WEB_NO_FINNHUB_CONCURRENCY_MIN) return WEB_NO_FINNHUB_CONCURRENCY_MIN;
+  if (n > WEB_NO_FINNHUB_CONCURRENCY_MAX) return WEB_NO_FINNHUB_CONCURRENCY_MAX;
+  return n;
+}
 
 /**
  * Fetches delayed last prices (deduped).
@@ -147,8 +159,9 @@ export function useStockQuotes(infos: TickerInfo[]) {
     const staleOrMissing = list.filter(t => {
       const p = cached.get(t);
       if (p == null || p <= 0) return true;
-      if (sessionQuoteCache.has(t) && !isForced) return false;
-      return !isQuoteFresh(t, QUOTE_FRESH_MS, now);
+      // Session cache improves perceived speed, but freshness should still be
+      // based on persisted updatedAt so stale quotes refresh in background.
+      return isForced || !isQuoteFresh(t, QUOTE_FRESH_MS, now);
     });
 
     const fetchQueue = isForced
@@ -186,31 +199,29 @@ export function useStockQuotes(infos: TickerInfo[]) {
     (async () => {
       let anyLivePrice = false;
       const webMissed: string[] = [];
-
-      for (let i = 0; i < fetchQueue.length; i++) {
-        const t = fetchQueue[i];
-        if (cancelled) return;
-
-        setFetchProgress({ phase: 'web', current: i + 1, total: fetchQueue.length });
-
+      let webCompleted = 0;
+      const fetchOne = async (t: string): Promise<{ price: number | null; usedFinnhub: boolean }> => {
         // Deduplicate in-flight requests
         let pricePromise = inFlightQuoteFetch.get(t);
         if (!pricePromise) {
           pricePromise = (async () => {
             try {
               const r = await fetchDelayedQuoteWithoutGemini(t, nameOf.get(t));
-              return r.price != null && r.price > 0 ? r.price : null;
+              return {
+                price: r.price != null && r.price > 0 ? r.price : null,
+                usedFinnhub: !!r.usedFinnhub,
+              };
             } catch {
-              return null;
+              return { price: null, usedFinnhub: !!token };
             }
           })();
           inFlightQuoteFetch.set(t, pricePromise);
           pricePromise.finally(() => inFlightQuoteFetch.delete(t));
         }
+        return pricePromise;
+      };
 
-        const price = await pricePromise;
-        if (cancelled) return;
-
+      const applyOne = (t: string, price: number | null) => {
         upsertQuoteCache(new Map([[t, price]]));
         if (price != null && price > 0) sessionQuoteCache.set(t, price);
 
@@ -224,13 +235,35 @@ export function useStockQuotes(infos: TickerInfo[]) {
 
         if (price != null) anyLivePrice = true;
         else webMissed.push(t);
+        webCompleted += 1;
+        setFetchProgress({ phase: 'web', current: webCompleted, total: fetchQueue.length });
+      };
 
-        if (cancelled) return;
-
-        if (i < fetchQueue.length - 1) {
-          if (token) await sleep(FINNHUB_GAP_MS);
-          else if (geminiKey) await sleep(GEMINI_GAP_MS);
+      if (token) {
+        for (let i = 0; i < fetchQueue.length; i++) {
+          const t = fetchQueue[i];
+          if (cancelled) return;
+          const { price, usedFinnhub } = await fetchOne(t);
+          if (cancelled) return;
+          applyOne(t, price);
+          if (cancelled) return;
+          if (i < fetchQueue.length - 1 && usedFinnhub) await sleep(FINNHUB_GAP_MS);
         }
+      } else {
+        let nextIndex = 0;
+        const workerCount = Math.min(resolveWebConcurrency(), fetchQueue.length);
+        const worker = async () => {
+          while (!cancelled) {
+            const i = nextIndex;
+            nextIndex += 1;
+            if (i >= fetchQueue.length) return;
+            const t = fetchQueue[i];
+            const { price } = await fetchOne(t);
+            if (cancelled) return;
+            applyOne(t, price);
+          }
+        };
+        await Promise.all(Array.from({ length: workerCount }, () => worker()));
       }
 
       if (cancelled) return;

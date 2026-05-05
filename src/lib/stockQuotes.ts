@@ -309,48 +309,51 @@ export async function fetchDelayedQuoteWithoutGemini(
 ): Promise<{
   price: number | null;
   source: QuoteSource;
+  usedFinnhub: boolean;
 }> {
   const intl = isInternationalTicker(ticker);
   const token = import.meta.env.VITE_FINNHUB_API_KEY as string | undefined;
+  let usedFinnhub = false;
 
   if (intl && companyName) {
     const r = await fetchQuoteYahooByName(companyName, ticker);
-    if (r != null) return { price: r.price, source: 'yahoo' };
+    if (r != null) return { price: r.price, source: 'yahoo', usedFinnhub };
   }
 
   if (intl) {
     for (const sym of listingSymbolVariants(ticker)) {
       const p = await fetchQuoteYahoo(sym);
-      if (p != null) return { price: p, source: 'yahoo' };
+      if (p != null) return { price: p, source: 'yahoo', usedFinnhub };
     }
   }
 
   if (token) {
+    usedFinnhub = true;
     const p = await fetchQuoteFinnhubResolved(ticker, token);
-    if (p != null) return { price: p, source: 'finnhub' };
+    if (p != null) return { price: p, source: 'finnhub', usedFinnhub };
   }
 
   if (!intl) {
     for (const sym of listingSymbolVariants(ticker)) {
       const p = await fetchQuoteYahoo(sym);
-      if (p != null) return { price: p, source: 'yahoo' };
+      if (p != null) return { price: p, source: 'yahoo', usedFinnhub };
     }
     if (companyName) {
       const r = await fetchQuoteYahooByName(companyName, ticker);
-      if (r != null) return { price: r.price, source: 'yahoo' };
+      if (r != null) return { price: r.price, source: 'yahoo', usedFinnhub };
     }
   }
 
   try {
     let p = await fetchQuoteStooq(ticker);
-    if (p != null) return { price: p, source: 'stooq' };
+    if (p != null) return { price: p, source: 'stooq', usedFinnhub };
     p = await fetchQuoteStooqForeignFallback(ticker);
-    if (p != null) return { price: p, source: 'stooq' };
+    if (p != null) return { price: p, source: 'stooq', usedFinnhub };
   } catch {
     // CORS or network
   }
 
-  return { price: null, source: 'none' };
+  return { price: null, source: 'none', usedFinnhub };
 }
 
 export async function fetchDelayedQuote(
