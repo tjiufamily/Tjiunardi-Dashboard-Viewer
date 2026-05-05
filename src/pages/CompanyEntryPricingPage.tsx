@@ -24,6 +24,7 @@ import {
   DEFAULT_SCORE_BRACKETS,
 } from '../lib/positionSizing';
 import { normalizeTickerSymbol } from '../lib/stockQuotes';
+import { supabase } from '../supabase';
 import { QUALITY_SCORE_TYPES, SAFETY_SCORE_TYPES, SCORE_LABELS, SCORE_TYPES } from '../types';
 import type { CompanyScores, GemRun, ScoreType } from '../types';
 
@@ -246,6 +247,100 @@ function entryPricingBaseFilename(ticker: string, companyName: string): string {
   const t = sanitizeFilenamePart(ticker || 'TICKER', 12);
   const n = sanitizeFilenamePart(companyName.replace(/\s*\([^)]*\)\s*$/, '').trim() || 'Company', 40);
   return `Tjiunardi_EntryPricing_${t}_${n}_${dateStr}_${timeStr}`;
+}
+
+function isImageAsset(filenameOrPath: string | null | undefined): boolean {
+  if (!filenameOrPath) return false;
+  return /\.(png|jpg|jpeg|webp|gif)$/i.test(filenameOrPath);
+}
+
+function isSpreadsheetAsset(filenameOrPath: string | null | undefined): boolean {
+  if (!filenameOrPath) return false;
+  return /\.(xlsx|xls|csv)$/i.test(filenameOrPath);
+}
+
+function isLikelyBucketId(segment: string): boolean {
+  return /^[a-z0-9][a-z0-9_-]*$/.test(segment);
+}
+
+function supabaseStoragePublicUrl(bucket: string, objectPath: string): string {
+  const { data } = supabase.storage.from(bucket).getPublicUrl(objectPath);
+  return data.publicUrl || '';
+}
+
+async function supabaseStorageSignedUrl(bucket: string, objectPath: string): Promise<string | null> {
+  const { data, error } = await supabase.storage.from(bucket).createSignedUrl(objectPath, 60 * 60);
+  if (error || !data?.signedUrl) return null;
+  return data.signedUrl;
+}
+
+function candidateBucketsForAsset(type: 'fastgraph' | 'financial'): string[] {
+  const fromEnv = [
+    import.meta.env.VITE_SUPABASE_STORAGE_BUCKET as string | undefined,
+    import.meta.env.VITE_SUPABASE_FILES_BUCKET as string | undefined,
+    type === 'fastgraph'
+      ? (import.meta.env.VITE_SUPABASE_FASTGRAPH_BUCKET as string | undefined)
+      : (import.meta.env.VITE_SUPABASE_FINANCIAL_BUCKET as string | undefined),
+  ]
+    .map(v => (v ?? '').trim())
+    .filter(Boolean);
+  const defaults = ['uploads', 'company-files', 'company_files', 'files', 'documents'];
+  return [...new Set([...fromEnv, ...defaults])];
+}
+
+async function resolveSupabaseStorageUrl(
+  objectKey: string | null | undefined,
+  type: 'fastgraph' | 'financial',
+): Promise<string | null> {
+  const raw = (objectKey ?? '').trim();
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) return raw;
+
+  const normalized = raw.replace(/^\/+/, '');
+  const buckets = candidateBucketsForAsset(type);
+  const knownBuckets = new Set(buckets);
+  const pathCandidates: Array<{ bucket: string; path: string }> = [];
+  const urlCandidates: string[] = [];
+
+  const publicPathMatch = normalized.match(/(?:^|\/)storage\/v1\/object\/public\/([^/]+)\/(.+)$/i);
+  if (publicPathMatch) {
+    const bucket = publicPathMatch[1];
+    const objectPath = publicPathMatch[2];
+    if (bucket && objectPath) pathCandidates.push({ bucket, path: objectPath });
+  }
+
+  const objectPublicMatch = normalized.match(/^object\/public\/([^/]+)\/(.+)$/i);
+  if (objectPublicMatch) {
+    const bucket = objectPublicMatch[1];
+    const objectPath = objectPublicMatch[2];
+    if (bucket && objectPath) pathCandidates.push({ bucket, path: objectPath });
+  }
+
+  // Most stored keys in this project are path-style (e.g. `companies/tmp/...`) inside a known bucket.
+  for (const bucket of buckets) {
+    pathCandidates.push({ bucket, path: normalized });
+  }
+
+  const slashIdx = normalized.indexOf('/');
+  if (slashIdx > 0 && slashIdx < normalized.length - 1) {
+    const first = normalized.slice(0, slashIdx);
+    const rest = normalized.slice(slashIdx + 1);
+    if (isLikelyBucketId(first) && knownBuckets.has(first)) {
+      pathCandidates.push({ bucket: first, path: rest });
+    }
+  }
+
+  const uniquePaths = Array.from(new Map(pathCandidates.map(p => [`${p.bucket}::${p.path}`, p])).values());
+
+  for (const item of uniquePaths) {
+    const signedUrl = await supabaseStorageSignedUrl(item.bucket, item.path);
+    if (signedUrl) return signedUrl;
+  }
+
+  for (const item of uniquePaths) {
+    urlCandidates.push(supabaseStoragePublicUrl(item.bucket, item.path));
+  }
+  return [...new Set(urlCandidates)].find(Boolean) ?? null;
 }
 
 export default function CompanyEntryPricingPage() {
@@ -636,6 +731,47 @@ export default function CompanyEntryPricingPage() {
   );
 
   const companyScore: CompanyScores | undefined = company;
+  const [fastgraphUrl, setFastgraphUrl] = useState<string | null>(null);
+  const [financialStatementUrl, setFinancialStatementUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setFastgraphUrl(null);
+    setFinancialStatementUrl(null);
+
+    resolveSupabaseStorageUrl(company?.fastgraph_object_key, 'fastgraph')
+      .then(url => {
+        if (!cancelled) setFastgraphUrl(url);
+      })
+      .catch(() => {
+        if (!cancelled) setFastgraphUrl(null);
+      });
+
+    resolveSupabaseStorageUrl(company?.financial_object_key, 'financial')
+      .then(url => {
+        if (!cancelled) setFinancialStatementUrl(url);
+      })
+      .catch(() => {
+        if (!cancelled) setFinancialStatementUrl(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [company?.fastgraph_object_key, company?.financial_object_key]);
+  const canRenderFastgraphImage = useMemo(
+    () =>
+      isImageAsset(company?.fastgraph_original_name) ||
+      isImageAsset(company?.fastgraph_object_key) ||
+      isImageAsset(fastgraphUrl),
+    [company?.fastgraph_original_name, company?.fastgraph_object_key, fastgraphUrl],
+  );
+  const looksLikeFinancialSheet = useMemo(
+    () =>
+      isSpreadsheetAsset(company?.financial_original_name) ||
+      isSpreadsheetAsset(company?.financial_object_key) ||
+      isSpreadsheetAsset(financialStatementUrl),
+    [company?.financial_original_name, company?.financial_object_key, financialStatementUrl],
+  );
   const overallFundamentalAvg = companyScore ? avgOfScores(companyScore.scores) : null;
   const safetyAvg = companyScore ? avgOfSafetyScores(companyScore.scores) : null;
   const combinedScoreAvg =
@@ -1423,6 +1559,44 @@ export default function CompanyEntryPricingPage() {
             </div>
             <div className="entry-kpi-card"><span>Overall Fundamental Avg</span><strong>{fmtNumber(overallFundamentalAvg, 2)}</strong></div>
           </div>
+          {(fastgraphUrl || financialStatementUrl) ? (
+            <div className="entry-pricing-panel entry-pricing-assets-panel">
+              <h3>Source Files</h3>
+              <div className="entry-pricing-assets-grid">
+                <div className="entry-pricing-asset-block">
+                  <h4>FastGraph</h4>
+                  {fastgraphUrl ? (
+                    canRenderFastgraphImage ? (
+                      <a href={fastgraphUrl} target="_blank" rel="noreferrer" className="entry-pricing-fastgraph-link">
+                        <img
+                          src={fastgraphUrl}
+                          alt={`${company.companyName} fastgraph`}
+                          className="entry-pricing-fastgraph-image"
+                          loading="lazy"
+                        />
+                      </a>
+                    ) : (
+                      <a href={fastgraphUrl} target="_blank" rel="noreferrer" className="entry-pricing-asset-link">
+                        Open FastGraph file
+                      </a>
+                    )
+                  ) : (
+                    <p className="entry-pricing-caption">FastGraph file not available.</p>
+                  )}
+                </div>
+                <div className="entry-pricing-asset-block">
+                  <h4>Financial Statement</h4>
+                  {financialStatementUrl ? (
+                    <a href={financialStatementUrl} target="_blank" rel="noreferrer" className="entry-pricing-asset-link">
+                      {looksLikeFinancialSheet ? 'Open financial statement (Excel)' : 'Open financial statement file'}
+                    </a>
+                  ) : (
+                    <p className="entry-pricing-caption">Financial statement file not available.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : null}
         </div>
 
         <div className="entry-pricing-panel entry-pricing-sim-panel">

@@ -113,6 +113,10 @@ export type CompanyScores = {
   companyName: string;
   ticker: string;
   quote_ticker?: string | null;
+  financial_object_key?: string | null;
+  financial_original_name?: string | null;
+  fastgraph_object_key?: string | null;
+  fastgraph_original_name?: string | null;
   scores: Partial<Record<ScoreType, number>>;
   rawScores: Partial<Record<ScoreType, number>>;
 };

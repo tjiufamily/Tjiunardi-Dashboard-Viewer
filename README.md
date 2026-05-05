@@ -17,6 +17,15 @@ VITE_SUPABASE_ANON_KEY=your_anon_key_here
 
 Use the **same values** from your desktop app's `.env` file (in the `Tjiunardi-Dashboard` folder).
 
+For Entry Pricing source-file links (FastGraph/Financial), optionally add bucket overrides:
+
+```
+VITE_SUPABASE_STORAGE_BUCKET=your_bucket_name
+# Optional split buckets:
+# VITE_SUPABASE_FASTGRAPH_BUCKET=your_fastgraph_bucket
+# VITE_SUPABASE_FINANCIAL_BUCKET=your_financial_bucket
+```
+
 ### 2. Install dependencies (once)
 
 Open a terminal in this folder and run:

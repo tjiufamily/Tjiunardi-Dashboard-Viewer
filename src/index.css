@@ -104,6 +104,49 @@
   margin: 0 0 8px;
 }
 
+.entry-pricing-assets-panel {
+  padding: 10px 12px;
+}
+
+.entry-pricing-assets-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.entry-pricing-asset-block {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+
+.entry-pricing-asset-block h4 {
+  margin: 0;
+  font-size: 13px;
+  color: #9ab0d6;
+  font-weight: 600;
+}
+
+.entry-pricing-fastgraph-link {
+  display: block;
+}
+
+.entry-pricing-fastgraph-image {
+  display: block;
+  width: 100%;
+  max-height: 260px;
+  object-fit: contain;
+  border-radius: 8px;
+  border: 1px solid rgba(142, 164, 217, 0.22);
+  background: rgba(6, 12, 28, 0.72);
+}
+
+.entry-pricing-asset-link {
+  color: #a9c5ff;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .entry-pricing-caption {
   margin: 0 0 10px;
   color: #9ab0d6;
@@ -663,6 +706,9 @@
     grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   }
   .entry-company-search-row {
+    grid-template-columns: 1fr;
+  }
+  .entry-pricing-assets-grid {
     grid-template-columns: 1fr;
   }
   .entry-sim-layout {

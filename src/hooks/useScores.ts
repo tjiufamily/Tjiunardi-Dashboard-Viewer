@@ -229,6 +229,10 @@ export function useScoresData() {
         companyName: co.name,
         ticker: co.ticker,
         quote_ticker: co.quote_ticker,
+        financial_object_key: co.financial_object_key,
+        financial_original_name: co.financial_original_name,
+        fastgraph_object_key: co.fastgraph_object_key,
+        fastgraph_original_name: co.fastgraph_original_name,
         scores,
         rawScores,
       });
