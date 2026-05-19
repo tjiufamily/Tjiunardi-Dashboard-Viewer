@@ -6,7 +6,13 @@ import {
   sleep,
 } from '../lib/stockQuotes';
 import { fetchQuoteGemini } from '../lib/geminiQuoteFallback';
-import { isQuoteFresh, loadQuoteCache, loadQuoteCacheMeta, upsertQuoteCache } from '../lib/quoteCache';
+import {
+  isQuoteFresh,
+  loadQuoteCache,
+  loadQuoteCacheMeta,
+  shouldUseGeminiFallback,
+  upsertQuoteCache,
+} from '../lib/quoteCache';
 
 const FINNHUB_GAP_MS = 1100;
 const GEMINI_GAP_MS = 600;
@@ -15,8 +21,9 @@ const WEB_NO_FINNHUB_CONCURRENCY = 4;
 const WEB_NO_FINNHUB_CONCURRENCY_MIN = 1;
 const WEB_NO_FINNHUB_CONCURRENCY_MAX = 8;
 const QUOTE_LAST_REFRESHED_KEY = 'tjiunardi.dashboard.quoteCache.lastRefreshedAt.v1';
-const QUOTE_FRESH_MS = 24 * 60 * 60 * 1000; // 24 hours (yesterday close is acceptable)
-const AUTO_REFRESH_MS = 24 * 60 * 60 * 1000; // 24 hours auto-refresh cadence
+/** ~3 calendar days: covers a long weekend without treating quotes as stale every morning. */
+const QUOTE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
+const AUTO_REFRESH_MS = QUOTE_FRESH_MS;
 
 export type QuoteFetchPhase = 'idle' | 'web' | 'gemini';
 export type QuoteFetchProgress = { phase: QuoteFetchPhase; current: number; total: number };
@@ -44,8 +51,9 @@ function resolveWebConcurrency(): number {
  * Persists successful prices to localStorage (survives browser restart)
  * and to session cache (survives tab switches without re-fetch).
  *
- * Only fetches missing/stale quotes (> 24h). Auto-refreshes every 24h.
+ * Only fetches missing/stale quotes (> 3d). Auto-refreshes on the same cadence.
  * Manual refresh prioritises empty cells first, then stale ones.
+ * Gemini runs for empty quotes and when the web pass misses and the cache is stale.
  */
 export function useStockQuotes(infos: TickerInfo[]) {
   const entries = useMemo(() => {
@@ -268,18 +276,17 @@ export function useStockQuotes(infos: TickerInfo[]) {
 
       if (cancelled) return;
 
-      const missing = webMissed.filter(t => {
-        const p = loadQuoteCache().get(t);
-        return p == null || p <= 0;
-      });
-      if (geminiKey && missing.length > 0) {
-        setFetchProgress({ phase: 'gemini', current: 0, total: missing.length });
+      const geminiTargets = [...new Set(webMissed)].filter(t =>
+        shouldUseGeminiFallback(t, QUOTE_FRESH_MS, now),
+      );
+      if (geminiKey && geminiTargets.length > 0) {
+        setFetchProgress({ phase: 'gemini', current: 0, total: geminiTargets.length });
 
-        for (let j = 0; j < missing.length; j++) {
-          const t = missing[j];
+        for (let j = 0; j < geminiTargets.length; j++) {
+          const t = geminiTargets[j];
           if (cancelled) return;
 
-          setFetchProgress({ phase: 'gemini', current: j + 1, total: missing.length });
+          setFetchProgress({ phase: 'gemini', current: j + 1, total: geminiTargets.length });
 
           let g: number | null = null;
           try {
@@ -307,7 +314,7 @@ export function useStockQuotes(infos: TickerInfo[]) {
 
           if (cancelled) return;
 
-          if (j < missing.length - 1) {
+          if (j < geminiTargets.length - 1) {
             if (g != null) await sleep(GEMINI_EXTRA_GAP_MS);
             await sleep(GEMINI_GAP_MS);
           }

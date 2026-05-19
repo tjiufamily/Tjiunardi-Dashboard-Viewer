@@ -1,7 +1,9 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useCompanies, useGems, useCategories, useAllRuns } from '../hooks/useData';
+import { usePdfCountsByTicker, pdfCountForTicker } from '../hooks/useCompanyPdfs';
 import { useScoresData } from '../hooks/useScores';
+import { PDF_REPORTS_AVAILABLE } from '../lib/pdfReportsApi';
 import { avgOfScores } from '../lib/columnMinFilters';
 import {
   parseDashboardParams,
@@ -51,6 +53,8 @@ function gemSearchMatches(
 
 export default function CompaniesPage() {
   const { companies, loading: companiesLoading } = useCompanies();
+  const companyTickers = useMemo(() => companies.map((c) => c.ticker), [companies]);
+  const { counts: pdfCountsByTicker } = usePdfCountsByTicker(companyTickers);
   const { gems, loading: gemsLoading } = useGems();
   const { categories, loading: categoriesLoading } = useCategories();
   const { runs, loading: runsLoading } = useAllRuns();
@@ -716,6 +720,7 @@ export default function CompaniesPage() {
               const lastRun = latestRunByCompany.get(company.id);
               const avgWeighted = avgWeightedByCompanyId.get(company.id) ?? null;
               const eliteAvg = avgWeighted != null && avgWeighted > 9;
+              const pdfCount = pdfCountForTicker(pdfCountsByTicker, company.ticker);
 
               return (
                 <div
@@ -815,6 +820,36 @@ export default function CompaniesPage() {
                           </svg>
                           {gemCount} {gemCount === 1 ? 'gem' : 'gems'}
                         </span>
+                        {PDF_REPORTS_AVAILABLE && pdfCount > 0 ? (
+                          <button
+                            type="button"
+                            className="pdf-badge"
+                            title={`${pdfCount} PDF export${pdfCount === 1 ? '' : 's'}`}
+                            aria-label={`Open ${pdfCount} PDF report${pdfCount === 1 ? '' : 's'} for ${company.name}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              navigate(`/company/${company.id}/pdfs`, { state: { from: returnTo } });
+                            }}
+                          >
+                            <svg
+                              width="14"
+                              height="14"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              aria-hidden
+                            >
+                              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                              <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" />
+                            </svg>
+                            <span className="pdf-badge-text">
+                              PDF{pdfCount > 1 ? ` · ${pdfCount}` : ''}
+                            </span>
+                          </button>
+                        ) : (
+                          <span className="company-card-footer-spacer" aria-hidden />
+                        )}
                         {lastRun && (
                           <span className="company-date">
                             {new Date(lastRun).toLocaleDateString(undefined, {

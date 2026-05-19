@@ -42,6 +42,20 @@ npm run dev
 
 Open **http://localhost:5174** in your browser.
 
+### PDF reports (local dev only)
+
+Gem run PDFs exported from the desktop app can be browsed from company tiles when running locally:
+
+1. Add to `.env` (optional — a default OneDrive path is used if omitted):
+
+   ```
+   REPORTS_DIR=C:\Users\tjiun\OneDrive\Documents\Tjiunardi Stock Research Gemini Dashboard\Reports
+   ```
+
+2. Run `npm run dev` and open the dashboard. Companies with PDFs show a **PDF** button on the tile footer; it opens a searchable library grouped by gem.
+
+This does **not** work on deployed Vercel/Netlify builds (the browser cannot read your PC’s Reports folder). For tablet access later, PDFs would need to be uploaded to cloud storage (e.g. Supabase).
+
 ---
 
 ## For other users (tablets, phones, other computers)

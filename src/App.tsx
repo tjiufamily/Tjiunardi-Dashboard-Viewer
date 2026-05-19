@@ -9,6 +9,7 @@ import ScoresPage from './pages/ScoresPage';
 import PositionSizingPage from './pages/PositionSizingPage';
 import MetricsComparePage from './pages/MetricsComparePage';
 import CompanyEntryPricingPage from './pages/CompanyEntryPricingPage';
+import CompanyPdfReportsPage from './pages/CompanyPdfReportsPage';
 import Layout from './components/Layout';
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
@@ -46,6 +47,11 @@ export default function App() {
       <Route path="/company/:companyId/entry-pricing" element={
         <ProtectedRoute>
           <Layout><CompanyEntryPricingPage /></Layout>
+        </ProtectedRoute>
+      } />
+      <Route path="/company/:companyId/pdfs" element={
+        <ProtectedRoute>
+          <Layout><CompanyPdfReportsPage /></Layout>
         </ProtectedRoute>
       } />
       <Route path="/gem/:gemId" element={

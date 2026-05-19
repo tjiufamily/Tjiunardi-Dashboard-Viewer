@@ -76,6 +76,16 @@ export function isQuoteFresh(ticker: string, maxAgeMs: number, now = Date.now())
   return e.updatedAt > 0 && now - e.updatedAt < maxAgeMs;
 }
 
+/**
+ * After the web quote pass returns no price, try Gemini when there is no usable cache,
+ * or the cached value is older than maxAgeMs (e.g. web failed but stale numbers remain).
+ */
+export function shouldUseGeminiFallback(ticker: string, maxAgeMs: number, now = Date.now()): boolean {
+  const p = loadQuoteCache().get(ticker);
+  if (p == null || p <= 0) return true;
+  return !isQuoteFresh(ticker, maxAgeMs, now);
+}
+
 /** Merge new prices into storage (only positive numbers). */
 export function upsertQuoteCache(updates: Map<string, number | null>): void {
   try {
