@@ -846,6 +846,17 @@ export default function CompanyEntryPricingPage() {
       tenYearTotalCagrMetric,
     ],
   );
+
+  /** 3 core earnings growth figures for the simulation: adjusted operating earnings, 5Y value compounding (≈ ROIC × reinvestment), 2Y EPS growth */
+  const earningsGrowthIds = new Set<SimulationGrowthSource>(['adjusted_operating', 'five_y_value', 'two_y_eps']);
+  const earningsGrowthOptions = useMemo(
+    () => growthOptions.filter(g => earningsGrowthIds.has(g.id)),
+    [growthOptions],
+  );
+  const otherGrowthOptions = useMemo(
+    () => growthOptions.filter(g => !earningsGrowthIds.has(g.id)),
+    [growthOptions],
+  );
   const [simGrowthSource, setSimGrowthSource] = useState<SimulationGrowthSource>('custom');
   const [simGrowthPct, setSimGrowthPct] = useState<number>(0);
   const [simPe, setSimPe] = useState<number>(15);
@@ -1807,50 +1818,75 @@ export default function CompanyEntryPricingPage() {
 
                 <div className="entry-sim-growth-row" role="group" aria-label="EPS growth source and slider">
                   <div className="entry-sim-growth-source-row">
-                    <span className="entry-sim-mega-label" title="Annual EPS growth assumption used for 10-year compounding.">
-                      EPS Growth Source
+                    <span className="entry-sim-mega-label" title="Annual EPS growth assumption used for 10-year compounding. Pick from Gemini-extracted earnings growth metrics or use the slider.">
+                      EPS Growth
                     </span>
-                    <div className="entry-sim-tile-strip entry-sim-tile-strip--grow">
-                      {growthOptions.map(opt => (
-                        <button
-                          key={opt.id}
-                          type="button"
-                          title={opt.label}
-                          className={`entry-sim-tile entry-sim-tile--growth ${simGrowthSource === opt.id ? 'active' : ''}`}
-                          onClick={() => {
-                            setSimGrowthSource(opt.id);
-                            setSimGrowthPct(Number(clamp(opt.value ?? 0, -20, 100).toFixed(2)));
-                          }}
-                        >
-                          <span className="entry-sim-tile-title">{opt.label}</span>
-                          <span className="entry-sim-tile-val">{renderLinkedValue(fmtPct(opt.value ?? null, 1), opt.source ?? null)}</span>
-                        </button>
-                      ))}
-                      <button
-                        type="button"
-                        title="Custom growth"
-                        className={`entry-sim-tile entry-sim-tile--growth ${simGrowthSource === 'custom' ? 'active' : ''}`}
-                        onClick={() => setSimGrowthSource('custom')}
-                      >
-                        <span className="entry-sim-tile-title">Custom growth</span>
-                        <input
-                          type="number"
-                          step="0.1"
-                          value={Number.isFinite(simGrowthPct) ? simGrowthPct : ''}
-                          className="entry-sim-input-tiny entry-sim-input-tiny--growth-tile"
-                          onClick={e => {
-                            e.stopPropagation();
-                            setSimGrowthSource('custom');
-                          }}
-                          onChange={e => {
-                            const parsed = parseFloat(e.target.value);
-                            setSimGrowthSource('custom');
-                            setSimGrowthPct(Number.isFinite(parsed) ? Number(clamp(parsed, -20, 100).toFixed(2)) : 0);
-                          }}
-                          aria-label="Custom EPS growth value"
-                        />
-                      </button>
+                    {/* 3 core earnings growth tiles */}
+                    <div className="entry-sim-tile-strip entry-sim-tile-strip--earnings">
+                      {earningsGrowthOptions.length > 0 ? (
+                        earningsGrowthOptions.map(opt => (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            title={opt.label + (opt.source ? ` — from ${opt.source.gemName}` : '')}
+                            className={`entry-sim-tile entry-sim-tile--growth ${simGrowthSource === opt.id ? 'active' : ''}`}
+                            onClick={() => {
+                              setSimGrowthSource(opt.id);
+                              setSimGrowthPct(Number(clamp(opt.value ?? 0, -20, 100).toFixed(2)));
+                            }}
+                          >
+                            <span className="entry-sim-tile-title">{opt.label}</span>
+                            <span className="entry-sim-tile-val">{renderLinkedValue(fmtPct(opt.value ?? null, 1), opt.source ?? null)}</span>
+                          </button>
+                        ))
+                      ) : (
+                        <span className="entry-sim-no-data">No earnings growth data available</span>
+                      )}
                     </div>
+                    {/* Other growth sources + custom */}
+                    {(otherGrowthOptions.length > 0) && (
+                      <div className="entry-sim-tile-strip entry-sim-tile-strip--grow">
+                        {otherGrowthOptions.map(opt => (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            title={opt.label}
+                            className={`entry-sim-tile entry-sim-tile--growth ${simGrowthSource === opt.id ? 'active' : ''}`}
+                            onClick={() => {
+                              setSimGrowthSource(opt.id);
+                              setSimGrowthPct(Number(clamp(opt.value ?? 0, -20, 100).toFixed(2)));
+                            }}
+                          >
+                            <span className="entry-sim-tile-title">{opt.label}</span>
+                            <span className="entry-sim-tile-val">{renderLinkedValue(fmtPct(opt.value ?? null, 1), opt.source ?? null)}</span>
+                          </button>
+                        ))}
+                        <button
+                          type="button"
+                          title="Custom growth"
+                          className={`entry-sim-tile entry-sim-tile--growth ${simGrowthSource === 'custom' ? 'active' : ''}`}
+                          onClick={() => setSimGrowthSource('custom')}
+                        >
+                          <span className="entry-sim-tile-title">Custom growth</span>
+                          <input
+                            type="number"
+                            step="0.1"
+                            value={Number.isFinite(simGrowthPct) ? simGrowthPct : ''}
+                            className="entry-sim-input-tiny entry-sim-input-tiny--growth-tile"
+                            onClick={e => {
+                              e.stopPropagation();
+                              setSimGrowthSource('custom');
+                            }}
+                            onChange={e => {
+                              const parsed = parseFloat(e.target.value);
+                              setSimGrowthSource('custom');
+                              setSimGrowthPct(Number.isFinite(parsed) ? Number(clamp(parsed, -20, 100).toFixed(2)) : 0);
+                            }}
+                            aria-label="Custom EPS growth value"
+                          />
+                        </button>
+                      </div>
+                    )}
                   </div>
                   <div className="entry-sim-growth-slider entry-sim-growth-slider--below">
                     <div className="entry-sim-growth-slider-head">

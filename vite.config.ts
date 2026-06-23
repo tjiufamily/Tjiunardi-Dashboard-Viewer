@@ -10,6 +10,14 @@ export default defineConfig(({ mode }) => {
     plugins: [react(), pdfReportsPlugin(reportsDir)],
     server: {
       port: 5174,
+      host: true,
+      proxy: {
+        '/api/opencode-go': {
+          target: 'https://opencode.ai/zen/go',
+          changeOrigin: true,
+          rewrite: path => path.replace(/^\/api\/opencode-go/, ''),
+        },
+      },
     },
   };
 });

@@ -27,6 +27,25 @@ function fmt(v: number | null | undefined): string {
   return v.toFixed(1);
 }
 
+function fmtPct(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return '—';
+  return `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
+}
+
+/** Lightweight bar for decomposition */
+function DecompBar({ value, max, label, color }: { value: number | null; max: number; label: string; color: string }) {
+  const pct = value != null && max > 0 ? Math.min(100, (value / max) * 100) : 0;
+  return (
+    <div className="qd-bar-row">
+      <span className="qd-bar-label">{label}</span>
+      <div className="qd-bar-track">
+        <div className="qd-bar-fill" style={{ width: `${pct}%`, background: color }} />
+      </div>
+      <span className="qd-bar-val">{value != null ? value.toFixed(1) : '—'}</span>
+    </div>
+  );
+}
+
 export default function ScoresPage() {
   const { companyScores, loading, scoreColumnDescriptions } = useScoresData();
   const navigate = useNavigate();
@@ -40,6 +59,9 @@ export default function ScoresPage() {
   const [search, setSearch] = useState('');
   const [columnMins, setColumnMins] = useState<Record<string, string>>({});
   const [columnBoundModes, setColumnBoundModes] = useState<Record<string, ColumnBoundMode>>({});
+  const [expandedCompanyId, setExpandedCompanyId] = useState<string | null>(null);
+  const [aiInsightLoading, setAiInsightLoading] = useState(false);
+  const [aiInsightResult, setAiInsightResult] = useState<string | null>(null);
 
   const setMin = (key: string, value: string) => {
     setColumnMins(prev => ({ ...prev, [key]: value }));
@@ -105,6 +127,34 @@ export default function ScoresPage() {
     return list;
   }, [companyScores, search, columnMins, columnBoundModes, sortKey, sortDir]);
 
+  const expandedCompany = useMemo(
+    () => (expandedCompanyId ? companyScores.find(c => c.companyId === expandedCompanyId) ?? null : null),
+    [expandedCompanyId, companyScores],
+  );
+
+  const expandedQualityScores = useMemo(() => {
+    if (!expandedCompany) return [];
+    return QUALITY_SCORE_TYPES.map(st => ({
+      key: st,
+      label: SCORE_LABELS[st],
+      value: expandedCompany.scores[st] ?? null,
+    }));
+  }, [expandedCompany]);
+
+  const expandedSafetyScores = useMemo(() => {
+    if (!expandedCompany) return [];
+    return SAFETY_SCORE_TYPES.map(st => ({
+      key: st,
+      label: SCORE_LABELS[st],
+      value: expandedCompany.scores[st] ?? null,
+    }));
+  }, [expandedCompany]);
+
+  const maxQualityScore = useMemo(
+    () => Math.max(1, ...expandedQualityScores.map(s => s.value ?? 0)),
+    [expandedQualityScores],
+  );
+
   const arrow = (key: SortKey) => (sortKey === key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
 
   const scoreCellClass = (score: number | undefined): string => {
@@ -117,8 +167,7 @@ export default function ScoresPage() {
 
   const colSpan = QUALITY_SCORE_TYPES.length + SAFETY_SCORE_TYPES.length + 5;
 
-  // Sticky header (title row + filter row) needs a correct "stacked" offset.
-  // We measure the first header row height and pin the filter row right beneath it.
+  // Sticky header measurement
   useLayoutEffect(() => {
     const wrap = tableWrapRef.current;
     if (!wrap) return;
@@ -145,6 +194,61 @@ export default function ScoresPage() {
     };
   }, []);
 
+  /** AI Insight — sends filtered scorecard data to Hermes API for analysis */
+  const runAiInsight = async () => {
+    setAiInsightLoading(true);
+    setAiInsightResult(null);
+    try {
+      const apiKey = import.meta.env.VITE_HERMES_API_KEY as string | undefined;
+      const baseUrl = (import.meta.env.VITE_HERMES_API_URL as string) || 'http://127.0.0.1:8642/v1';
+      if (!apiKey) {
+        setAiInsightResult('⚠ Hermes API key not configured. Set VITE_HERMES_API_KEY in .env. Prompt ready for copy:\n\n' + buildAiPrompt());
+        setAiInsightLoading(false);
+        return;
+      }
+      const resp = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: 'hermes-agent',
+          messages: [{ role: 'user', content: buildAiPrompt() }],
+          max_tokens: 1200,
+        }),
+      });
+      if (!resp.ok) {
+        const txt = await resp.text().catch(() => '');
+        throw new Error(`API ${resp.status}: ${txt.slice(0, 200)}`);
+      }
+      const data = await resp.json();
+      const reply = data?.choices?.[0]?.message?.content ?? '(no response)';
+      setAiInsightResult(reply);
+    } catch (e: any) {
+      setAiInsightResult(`⚠ AI Insight failed: ${e.message || e}\n\nCopy prompt below to run manually.`);
+    } finally {
+      setAiInsightLoading(false);
+    }
+  };
+
+  const buildAiPrompt = () => {
+    const companies = filtered.slice(0, 30);
+    const lines = companies.map(c => {
+      const avg = avgOfScores(c.scores);
+      const safety = avgOfSafetyScores(c.scores);
+      return `${c.ticker} (${c.companyName}): Quality avg=${fmt(avg)}, Safety avg=${fmt(safety)}`;
+    });
+    return `Analyze the following scorecard of ${companies.length} companies from the Tjiunardi Dashboard Triple Engine Scanner. 
+
+For each company, provide:
+1. A 1-2 sentence assessment of quality vs safety balance
+2. Whether it passes the "high quality at reasonable valuation" check
+3. Any red flags you notice
+
+Companies:
+${lines.join('\n')}
+
+Respond concisely with actionable insights.`;
+  };
+
   if (loading) {
     return (
       <div className="page-loading">
@@ -170,7 +274,26 @@ export default function ScoresPage() {
         <button type="button" className="btn btn-primary btn-sm" onClick={exportLandscape}>
           Export table (.csv)
         </button>
+        <button
+          type="button"
+          className="btn btn-accent btn-sm"
+          onClick={runAiInsight}
+          disabled={aiInsightLoading}
+          title="Analyze the current scorecard using the Hermes AI model (not Gemini). Scans all visible companies for quality, safety, and red flags."
+        >
+          {aiInsightLoading ? 'Analyzing…' : '🔍 AI Insight'}
+        </button>
       </div>
+
+      {aiInsightResult && (
+        <div className="ai-insight-panel">
+          <div className="ai-insight-header">
+            <span>AI Insight</span>
+            <button type="button" className="ai-insight-close" onClick={() => setAiInsightResult(null)}>×</button>
+          </div>
+          <pre className="ai-insight-body">{aiInsightResult}</pre>
+        </div>
+      )}
 
       <div className="scores-table-wrap" ref={tableWrapRef}>
         <table className="scores-table scores-table--min-filters">
@@ -192,7 +315,7 @@ export default function ScoresPage() {
                   {arrow(st)}
                 </th>
               ))}
-              <th onClick={() => toggleSort('avg')} title="Average of quality weighted scores only">
+              <th onClick={() => toggleSort('avg')} title="Average of quality weighted scores">
                 Avg (quality){arrow('avg')}
               </th>
               {SAFETY_SCORE_TYPES.map(st => (
@@ -290,55 +413,115 @@ export default function ScoresPage() {
                 </td>
               </tr>
             ) : (
-              filtered.map(c => (
-                <tr key={c.companyId}>
-                  <td className="sticky-action">
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-primary"
-                      onClick={() =>
-                        navigate(buildPositionSizingHref({ companyId: c.companyId, returnTo }))
-                      }
+              filtered.map(c => {
+                const isExpanded = expandedCompanyId === c.companyId;
+                return (
+                  <>
+                    <tr
+                      key={c.companyId}
+                      className={`scores-row ${isExpanded ? 'scores-row--expanded' : ''}`}
+                      onClick={() => setExpandedCompanyId(isExpanded ? null : c.companyId)}
+                      style={{ cursor: 'pointer' }}
                     >
-                      Pos Size
-                    </button>
-                  </td>
-                  <td className="sticky-after-action company-name-cell">
-                    <Link
-                      className="scores-company-link"
-                      to={`/company/${c.companyId}?gemSort=weighted-desc`}
-                      state={{ from: returnTo }}
-                    >
-                      {c.companyName}
-                    </Link>
-                  </td>
-                  <td className="ticker-cell">
-                    <Link
-                      className="scores-company-link"
-                      to={`/entry-pricing?company=${encodeURIComponent(c.companyId)}`}
-                      state={{ from: returnTo }}
-                    >
-                      {c.ticker}
-                    </Link>
-                  </td>
-                  {QUALITY_SCORE_TYPES.map(st => (
-                    <td key={st} className={scoreCellClass(c.scores[st])}>
-                      {fmt(c.scores[st])}
-                    </td>
-                  ))}
-                  <td className={scoreCellClass(avgOfScores(c.scores) ?? undefined)}>
-                    {fmt(avgOfScores(c.scores))}
-                  </td>
-                  {SAFETY_SCORE_TYPES.map(st => (
-                    <td key={st} className={scoreCellClass(c.scores[st])}>
-                      {fmt(c.scores[st])}
-                    </td>
-                  ))}
-                  <td className={scoreCellClass(avgOfSafetyScores(c.scores) ?? undefined)}>
-                    {fmt(avgOfSafetyScores(c.scores))}
-                  </td>
-                </tr>
-              ))
+                      <td className="sticky-action">
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-primary"
+                          onClick={e => {
+                            e.stopPropagation();
+                            navigate(buildPositionSizingHref({ companyId: c.companyId, returnTo }));
+                          }}
+                        >
+                          Pos Size
+                        </button>
+                      </td>
+                      <td className="sticky-after-action company-name-cell">
+                        <span className="scores-company-link">
+                          {c.companyName}
+                        </span>
+                      </td>
+                      <td className="ticker-cell">
+                        <Link
+                          className="scores-company-link"
+                          to={`/entry-pricing?company=${encodeURIComponent(c.companyId)}`}
+                          state={{ from: returnTo }}
+                          onClick={e => e.stopPropagation()}
+                        >
+                          {c.ticker}
+                        </Link>
+                      </td>
+                      {QUALITY_SCORE_TYPES.map(st => (
+                        <td key={st} className={scoreCellClass(c.scores[st])}>
+                          {fmt(c.scores[st])}
+                        </td>
+                      ))}
+                      <td className={scoreCellClass(avgOfScores(c.scores) ?? undefined)}>
+                        {fmt(avgOfScores(c.scores))}
+                      </td>
+                      {SAFETY_SCORE_TYPES.map(st => (
+                        <td key={st} className={scoreCellClass(c.scores[st])}>
+                          {fmt(c.scores[st])}
+                        </td>
+                      ))}
+                      <td className={scoreCellClass(avgOfSafetyScores(c.scores) ?? undefined)}>
+                        {fmt(avgOfSafetyScores(c.scores))}
+                      </td>
+                    </tr>
+                    {isExpanded && (
+                      <tr key={`${c.companyId}-detail`} className="scores-detail-row">
+                        <td colSpan={colSpan}>
+                          <div className="quality-decomp-panel">
+                            <div className="qd-header">
+                              <strong>{c.companyName}</strong> ({c.ticker}) — Quality Score Decomposition
+                              <Link
+                                to={`/company/${c.companyId}?gemSort=weighted-desc`}
+                                className="btn btn-sm btn-ghost"
+                                style={{ marginLeft: 12 }}
+                              >
+                                View all runs →
+                              </Link>
+                            </div>
+                            <div className="qd-grid">
+                              <div className="qd-col">
+                                <h4 className="qd-col-title">Quality Components (Gemini Scores)</h4>
+                                {expandedCompany?.companyId === c.companyId &&
+                                  expandedQualityScores.map(s => (
+                                    <DecompBar
+                                      key={s.key}
+                                      label={s.label}
+                                      value={s.value}
+                                      max={maxQualityScore}
+                                      color={s.value != null && s.value >= 8 ? '#4caf50' : s.value != null && s.value >= 7 ? '#ff9800' : '#f44336'}
+                                    />
+                                  ))}
+                                <div className="qd-avg">
+                                  Quality Avg: <strong>{fmt(avgOfScores(c.scores))}</strong>
+                                </div>
+                              </div>
+                              <div className="qd-col">
+                                <h4 className="qd-col-title">Safety Components</h4>
+                                {expandedCompany?.companyId === c.companyId &&
+                                  expandedSafetyScores.map(s => (
+                                    <DecompBar
+                                      key={s.key}
+                                      label={s.label}
+                                      value={s.value}
+                                      max={10}
+                                      color={s.value != null && s.value >= 8 ? '#4caf50' : s.value != null && s.value >= 7 ? '#ff9800' : '#f44336'}
+                                    />
+                                  ))}
+                                <div className="qd-avg">
+                                  Safety Avg: <strong>{fmt(avgOfSafetyScores(c.scores))}</strong>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </>
+                );
+              })
             )}
           </tbody>
         </table>

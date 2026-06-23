@@ -1,7 +1,7 @@
-import { fetchQuoteGemini } from './geminiQuoteFallback';
+import { fetchQuoteAi } from './aiQuoteFallback';
 import { fetchQuoteYahoo, fetchQuoteYahooByName } from './yahooQuote';
 
-/** Delayed quotes: Finnhub (free tier, API key) or Stooq CSV (no key; may be CORS-restricted in some browsers). Optional Gemini backup (VITE_GEMINI_API_KEY). */
+/** Delayed quotes: Finnhub (free tier, API key) or Stooq CSV (no key; may be CORS-restricted in some browsers). Optional OpenCode Go / Gemini backup. */
 
 const FINNHUB_QUOTE = 'https://finnhub.io/api/v1/quote';
 const FINNHUB_SEARCH = 'https://finnhub.io/api/v1/search';
@@ -366,22 +366,18 @@ export async function fetchDelayedQuote(
   const r = await fetchDelayedQuoteWithoutGemini(ticker, companyName);
   if (r.price != null) return r;
 
-  const geminiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
-  if (geminiKey) {
-    const g = await fetchQuoteGemini(ticker, geminiKey, {
-      hintSymbols: listingSymbolVariants(ticker),
-      companyName,
-    });
-    if (g != null) return { price: g, source: 'gemini' };
-  }
+  const g = await fetchQuoteAi(ticker, {
+    hintSymbols: listingSymbolVariants(ticker),
+    companyName,
+  });
+  if (g != null) return { price: g, source: 'gemini' };
 
   return { price: null, source: 'none' };
 }
 
 /** ~55 req/min to stay under Finnhub free-tier limits when using the API key. */
 const FINNHUB_MIN_INTERVAL_MS = 1100;
-const GEMINI_GAP_MS = 600;
-const GEMINI_EXTRA_GAP_MS = 500;
+const AI_QUOTE_GAP_MS = 150;
 const NO_KEY_STOOQ_GAP_MS = 600;
 
 /**
@@ -394,9 +390,11 @@ export async function fetchDelayedQuotesForTickers(
   const unique = [...new Set(tickers.map(normalizeTickerSymbol).filter(Boolean))];
   const out = new Map<string, number | null>();
   const token = import.meta.env.VITE_FINNHUB_API_KEY as string | undefined;
-  const geminiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
+  const openCodeKey = (import.meta.env.VITE_OPENCODE_GO_API_KEY as string | undefined)?.trim();
+  const geminiKey = (import.meta.env.VITE_GEMINI_API_KEY as string | undefined)?.trim();
+  const aiEnabled = !!(openCodeKey || geminiKey);
 
-  if (!token && !geminiKey) {
+  if (!token && !aiEnabled) {
     await Promise.all(
       unique.map(async t => {
         const { price } = await fetchDelayedQuote(t);
@@ -410,22 +408,19 @@ export async function fetchDelayedQuotesForTickers(
     const r = await fetchDelayedQuoteWithoutGemini(t);
     out.set(t, r.price);
     if (token) await sleep(FINNHUB_MIN_INTERVAL_MS);
-    else if (geminiKey) await sleep(NO_KEY_STOOQ_GAP_MS);
+    else if (aiEnabled) await sleep(NO_KEY_STOOQ_GAP_MS);
   }
 
-  if (geminiKey) {
+  if (aiEnabled) {
     const missing = unique.filter(t => {
       const p = out.get(t);
       return p == null || p <= 0;
     });
     for (let i = 0; i < missing.length; i++) {
       const t = missing[i];
-      const g = await fetchQuoteGemini(t, geminiKey, { hintSymbols: listingSymbolVariants(t) });
+      const g = await fetchQuoteAi(t, { hintSymbols: listingSymbolVariants(t) });
       if (g != null) out.set(t, g);
-      if (i < missing.length - 1) {
-        if (g != null) await sleep(GEMINI_EXTRA_GAP_MS);
-        await sleep(GEMINI_GAP_MS);
-      }
+      if (i < missing.length - 1) await sleep(AI_QUOTE_GAP_MS);
     }
   }
 

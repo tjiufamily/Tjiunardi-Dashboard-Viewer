@@ -2379,8 +2379,8 @@ export default function MetricsComparePage() {
               <>
                 <span className="metrics-quotes-spinner" aria-hidden />
                 <span className="metrics-quotes-status-text">
-                  {fetchProgress.phase === 'gemini'
-                    ? `Gemini backup ${fetchProgress.current}/${fetchProgress.total}…`
+                  {fetchProgress.phase === 'ai'
+                    ? `AI quote backup ${fetchProgress.current}/${fetchProgress.total}…`
                     : `Fetching prices ${fetchProgress.current}/${fetchProgress.total}…`}
                 </span>
               </>

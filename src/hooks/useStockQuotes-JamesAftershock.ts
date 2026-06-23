@@ -6,7 +6,7 @@ import {
   sleep,
 } from '../lib/stockQuotes';
 import { fetchQuoteGemini } from '../lib/geminiQuoteFallback';
-import { loadQuoteCache, upsertQuoteCache, isQuoteFresh, shouldUseGeminiFallback } from '../lib/quoteCache';
+import { loadQuoteCache, upsertQuoteCache, isQuoteFresh, shouldUseAiQuoteFallback } from '../lib/quoteCache';
 
 const FINNHUB_GAP_MS = 1100;
 const GEMINI_GAP_MS = 600;
@@ -16,7 +16,7 @@ const QUOTE_LAST_REFRESHED_KEY = 'tjiunardi.dashboard.quoteCache.lastRefreshedAt
 const QUOTE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
 const AUTO_REFRESH_MS = QUOTE_FRESH_MS;
 
-export type QuoteFetchPhase = 'idle' | 'web' | 'gemini';
+export type QuoteFetchPhase = 'idle' | 'web' | 'ai';
 export type QuoteFetchProgress = { phase: QuoteFetchPhase; current: number; total: number };
 
 export type TickerInfo = { ticker: string; name?: string };
@@ -225,16 +225,16 @@ export function useStockQuotes(infos: TickerInfo[]) {
       if (cancelled) return;
 
       const geminiTargets = [...new Set(webMissed)].filter(t =>
-        shouldUseGeminiFallback(t, QUOTE_FRESH_MS, now),
+        shouldUseAiQuoteFallback(t, QUOTE_FRESH_MS, now),
       );
       if (geminiKey && geminiTargets.length > 0) {
-        setFetchProgress({ phase: 'gemini', current: 0, total: geminiTargets.length });
+        setFetchProgress({ phase: 'ai', current: 0, total: geminiTargets.length });
 
         for (let j = 0; j < geminiTargets.length; j++) {
           const t = geminiTargets[j];
           if (cancelled) return;
 
-          setFetchProgress({ phase: 'gemini', current: j + 1, total: geminiTargets.length });
+          setFetchProgress({ phase: 'ai', current: j + 1, total: geminiTargets.length });
 
           let g: number | null = null;
           try {

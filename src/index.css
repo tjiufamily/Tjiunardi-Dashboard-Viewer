@@ -331,6 +331,37 @@
   min-width: 0;
 }
 
+/* Earnings growth tiles — 3 core earnings figures in a neat row */
+.entry-sim-tile-strip--earnings {
+  flex: 0 0 auto;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.entry-sim-tile-strip--earnings .entry-sim-tile {
+  min-width: 130px;
+  max-width: 180px;
+  border-color: rgba(129, 199, 132, 0.35);
+  background: rgba(8, 24, 14, 0.6);
+}
+
+.entry-sim-tile-strip--earnings .entry-sim-tile:hover {
+  border-color: rgba(129, 199, 132, 0.65);
+}
+
+.entry-sim-tile-strip--earnings .entry-sim-tile.active {
+  border-color: rgba(129, 199, 132, 0.8);
+  background: rgba(12, 36, 18, 0.85);
+  box-shadow: 0 0 8px rgba(129, 199, 132, 0.12);
+}
+
+.entry-sim-no-data {
+  font-size: 0.62rem;
+  color: var(--text-muted);
+  padding: 4px 6px;
+  font-style: italic;
+}
+
 .entry-sim-tile {
   flex: 0 0 auto;
   display: flex;
@@ -4059,6 +4090,167 @@ a.gem-companies-link:hover {
   border-radius: var(--radius-sm);
   text-align: center;
   font-variant-numeric: tabular-nums;
+}
+
+/* ── Quality Decomposition Panel (expandable row) ── */
+.scores-row {
+  transition: background 0.15s;
+}
+.scores-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.scores-row--expanded {
+  background: rgba(129, 156, 255, 0.06);
+}
+
+.scores-detail-row td {
+  padding: 0;
+  border-bottom: 1px solid rgba(129, 156, 255, 0.15);
+}
+
+.quality-decomp-panel {
+  padding: 14px 18px;
+  background: rgba(8, 14, 32, 0.8);
+  border-top: 1px solid rgba(129, 156, 255, 0.12);
+}
+
+.qd-header {
+  display: flex;
+  align-items: center;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+}
+
+.qd-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+
+.qd-col-title {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin: 0 0 10px 0;
+}
+
+.qd-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 0.72rem;
+}
+
+.qd-bar-label {
+  flex: 0 0 140px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.qd-bar-track {
+  flex: 1 1 0;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  overflow: hidden;
+  min-width: 40px;
+}
+
+.qd-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s ease;
+  min-width: 0;
+}
+
+.qd-bar-val {
+  flex: 0 0 32px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.qd-avg {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+.qd-avg strong {
+  color: var(--text-primary);
+}
+
+/* ── AI Insight Panel ── */
+.ai-insight-panel {
+  margin: 8px 0 12px;
+  border: 1px solid rgba(129, 156, 255, 0.25);
+  border-radius: var(--radius);
+  background: rgba(12, 18, 40, 0.9);
+  overflow: hidden;
+}
+
+.ai-insight-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 14px;
+  background: rgba(129, 156, 255, 0.08);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  border-bottom: 1px solid rgba(129, 156, 255, 0.12);
+}
+
+.ai-insight-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0 2px;
+}
+.ai-insight-close:hover {
+  color: var(--text-primary);
+}
+
+.ai-insight-body {
+  padding: 12px 14px;
+  font-size: 0.76rem;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  max-height: 360px;
+  overflow-y: auto;
+  margin: 0;
+  font-family: inherit;
+}
+
+.btn-accent {
+  background: rgba(129, 156, 255, 0.15);
+  border: 1px solid rgba(129, 156, 255, 0.3);
+  color: #c0cbff;
+}
+.btn-accent:hover {
+  background: rgba(129, 156, 255, 0.25);
+  border-color: rgba(129, 156, 255, 0.5);
+}
+
+@media (max-width: 768px) {
+  .qd-grid {
+    grid-template-columns: 1fr;
+  }
+  .qd-bar-label {
+    flex: 0 0 110px;
+  }
 }
 
 .sizing-return-row {

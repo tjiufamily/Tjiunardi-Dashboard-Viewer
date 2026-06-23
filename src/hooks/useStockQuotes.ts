@@ -5,27 +5,29 @@ import {
   normalizeTickerSymbol,
   sleep,
 } from '../lib/stockQuotes';
-import { fetchQuoteGemini } from '../lib/geminiQuoteFallback';
+import { fetchQuoteAi } from '../lib/aiQuoteFallback';
 import {
   isQuoteFresh,
   loadQuoteCache,
   loadQuoteCacheMeta,
-  shouldUseGeminiFallback,
+  shouldUseAiQuoteFallback,
   upsertQuoteCache,
 } from '../lib/quoteCache';
 
 const FINNHUB_GAP_MS = 1100;
-const GEMINI_GAP_MS = 600;
-const GEMINI_EXTRA_GAP_MS = 500;
+const AI_QUOTE_GAP_MS = 150;
 const WEB_NO_FINNHUB_CONCURRENCY = 4;
 const WEB_NO_FINNHUB_CONCURRENCY_MIN = 1;
 const WEB_NO_FINNHUB_CONCURRENCY_MAX = 8;
+const AI_QUOTE_CONCURRENCY = 4;
+const AI_QUOTE_CONCURRENCY_MIN = 1;
+const AI_QUOTE_CONCURRENCY_MAX = 8;
 const QUOTE_LAST_REFRESHED_KEY = 'tjiunardi.dashboard.quoteCache.lastRefreshedAt.v1';
-/** ~3 calendar days: covers a long weekend without treating quotes as stale every morning. */
-const QUOTE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
+/** Re-fetch quotes when cache is older than 1 day. */
+const QUOTE_FRESH_MS = 24 * 60 * 60 * 1000;
 const AUTO_REFRESH_MS = QUOTE_FRESH_MS;
 
-export type QuoteFetchPhase = 'idle' | 'web' | 'gemini';
+export type QuoteFetchPhase = 'idle' | 'web' | 'ai';
 export type QuoteFetchProgress = { phase: QuoteFetchPhase; current: number; total: number };
 
 export type TickerInfo = { ticker: string; name?: string };
@@ -44,16 +46,31 @@ function resolveWebConcurrency(): number {
   return n;
 }
 
+function resolveAiConcurrency(): number {
+  const raw = Number(import.meta.env.VITE_AI_QUOTE_CONCURRENCY);
+  if (!Number.isFinite(raw)) return AI_QUOTE_CONCURRENCY;
+  const n = Math.trunc(raw);
+  if (n < AI_QUOTE_CONCURRENCY_MIN) return AI_QUOTE_CONCURRENCY_MIN;
+  if (n > AI_QUOTE_CONCURRENCY_MAX) return AI_QUOTE_CONCURRENCY_MAX;
+  return n;
+}
+
+function hasAiQuoteProvider(): boolean {
+  const openCodeKey = (import.meta.env.VITE_OPENCODE_GO_API_KEY as string | undefined)?.trim();
+  const geminiKey = (import.meta.env.VITE_GEMINI_API_KEY as string | undefined)?.trim();
+  return !!(openCodeKey || geminiKey);
+}
+
 /**
  * Fetches delayed last prices (deduped).
  * Pass 1: Finnhub → Yahoo (symbol) → Yahoo (name search) → Stooq.
- * Pass 2: Gemini for symbols still missing.
+ * Pass 2: OpenCode Go (DeepSeek V4 Flash) → Gemini for symbols still missing.
  * Persists successful prices to localStorage (survives browser restart)
  * and to session cache (survives tab switches without re-fetch).
  *
- * Only fetches missing/stale quotes (> 3d). Auto-refreshes on the same cadence.
+ * Only fetches missing/stale quotes (> 1d). Auto-refreshes on the same cadence.
  * Manual refresh prioritises empty cells first, then stale ones.
- * Gemini runs for empty quotes and when the web pass misses and the cache is stale.
+ * AI fallback runs for empty quotes and when the web pass misses and the cache is stale.
  */
 export function useStockQuotes(infos: TickerInfo[]) {
   const entries = useMemo(() => {
@@ -202,7 +219,7 @@ export function useStockQuotes(infos: TickerInfo[]) {
     setFetchProgress({ phase: 'web', current: 0, total: fetchQueue.length });
 
     const token = import.meta.env.VITE_FINNHUB_API_KEY as string | undefined;
-    const geminiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
+    const aiEnabled = hasAiQuoteProvider();
 
     (async () => {
       let anyLivePrice = false;
@@ -276,49 +293,54 @@ export function useStockQuotes(infos: TickerInfo[]) {
 
       if (cancelled) return;
 
-      const geminiTargets = [...new Set(webMissed)].filter(t =>
-        shouldUseGeminiFallback(t, QUOTE_FRESH_MS, now),
+      const aiTargets = [...new Set(webMissed)].filter(t =>
+        shouldUseAiQuoteFallback(t, QUOTE_FRESH_MS, now),
       );
-      if (geminiKey && geminiTargets.length > 0) {
-        setFetchProgress({ phase: 'gemini', current: 0, total: geminiTargets.length });
+      if (aiEnabled && aiTargets.length > 0) {
+        setFetchProgress({ phase: 'ai', current: 0, total: aiTargets.length });
 
-        for (let j = 0; j < geminiTargets.length; j++) {
-          const t = geminiTargets[j];
-          if (cancelled) return;
+        let aiCompleted = 0;
+        const applyAi = (t: string, g: number | null) => {
+          upsertQuoteCache(new Map([[t, g]]));
+          if (g != null && g > 0) sessionQuoteCache.set(t, g);
 
-          setFetchProgress({ phase: 'gemini', current: j + 1, total: geminiTargets.length });
+          setLiveQuotes(prev => {
+            const next = new Map(prev);
+            const session = sessionQuoteCache.get(t);
+            const merged = g != null && g > 0 ? g : session ?? prev.get(t) ?? loadQuoteCache().get(t) ?? null;
+            next.set(t, merged);
+            return next;
+          });
 
-          let g: number | null = null;
-          try {
-            g = await fetchQuoteGemini(t, geminiKey, {
-              hintSymbols: listingSymbolVariants(t),
-              companyName: nameOf.get(t),
-            });
+          if (g != null && g > 0) anyLivePrice = true;
+          aiCompleted += 1;
+          setFetchProgress({ phase: 'ai', current: aiCompleted, total: aiTargets.length });
+        };
+
+        let nextAiIndex = 0;
+        const aiWorkerCount = Math.min(resolveAiConcurrency(), aiTargets.length);
+        const aiWorker = async () => {
+          while (!cancelled) {
+            const j = nextAiIndex;
+            nextAiIndex += 1;
+            if (j >= aiTargets.length) return;
+            const t = aiTargets[j];
+            try {
+              const g = await fetchQuoteAi(t, {
+                hintSymbols: listingSymbolVariants(t),
+                companyName: nameOf.get(t),
+              });
+              if (cancelled) return;
+              applyAi(t, g);
+            } catch {
+              if (cancelled) return;
+              applyAi(t, null);
+            }
             if (cancelled) return;
-
-            upsertQuoteCache(new Map([[t, g]]));
-            if (g != null && g > 0) sessionQuoteCache.set(t, g);
-
-            setLiveQuotes(prev => {
-              const next = new Map(prev);
-              const session = sessionQuoteCache.get(t);
-              const merged = g != null && g > 0 ? g : session ?? prev.get(t) ?? loadQuoteCache().get(t) ?? null;
-              next.set(t, merged);
-              return next;
-            });
-
-            if (g != null && g > 0) anyLivePrice = true;
-          } catch {
-            /* ignore */
+            if (j < aiTargets.length - 1) await sleep(AI_QUOTE_GAP_MS);
           }
-
-          if (cancelled) return;
-
-          if (j < geminiTargets.length - 1) {
-            if (g != null) await sleep(GEMINI_EXTRA_GAP_MS);
-            await sleep(GEMINI_GAP_MS);
-          }
-        }
+        };
+        await Promise.all(Array.from({ length: aiWorkerCount }, () => aiWorker()));
       }
 
       if (cancelled) return;

@@ -77,10 +77,10 @@ export function isQuoteFresh(ticker: string, maxAgeMs: number, now = Date.now())
 }
 
 /**
- * After the web quote pass returns no price, try Gemini when there is no usable cache,
+ * After the web quote pass returns no price, try AI fallback when there is no usable cache,
  * or the cached value is older than maxAgeMs (e.g. web failed but stale numbers remain).
  */
-export function shouldUseGeminiFallback(ticker: string, maxAgeMs: number, now = Date.now()): boolean {
+export function shouldUseAiQuoteFallback(ticker: string, maxAgeMs: number, now = Date.now()): boolean {
   const p = loadQuoteCache().get(ticker);
   if (p == null || p <= 0) return true;
   return !isQuoteFresh(ticker, maxAgeMs, now);
