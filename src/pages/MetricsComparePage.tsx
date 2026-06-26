@@ -1336,11 +1336,13 @@ export default function MetricsComparePage() {
     quotes,
     quoteUpdatedAt,
     loading: quotesLoading,
+    refreshing: quotesRefreshing,
     error: quotesError,
     fetchProgress,
     refresh: refreshQuotes,
     lastRefreshedAt,
   } = useStockQuotes(rowTickerInfos);
+  const quotesBusy = quotesLoading || quotesRefreshing;
   const [refreshClock, setRefreshClock] = useState(() => Date.now());
   useEffect(() => {
     if (!lastRefreshedAt) return;
@@ -2351,19 +2353,19 @@ export default function MetricsComparePage() {
           type="button"
           className="btn btn-ghost btn-sm"
           onClick={() => refreshQuotes(false)}
-          disabled={selectedGemIds.length === 0 || rowCount === 0 || quotesLoading}
+          disabled={selectedGemIds.length === 0 || rowCount === 0 || quotesBusy}
           title="Fetch only rows with empty prices (priority first)"
         >
-          {quotesLoading ? 'Fetching empty prices…' : 'Fetch empty prices'}
+          {quotesBusy ? 'Fetching empty prices…' : 'Fetch empty prices'}
         </button>
         <button
           type="button"
           className="btn btn-ghost btn-sm"
           onClick={() => refreshQuotes(true)}
-          disabled={selectedGemIds.length === 0 || rowCount === 0 || quotesLoading}
+          disabled={selectedGemIds.length === 0 || rowCount === 0 || quotesBusy}
           title="Re-fetch all prices (empty rows are fetched first)"
         >
-          {quotesLoading ? 'Refreshing prices…' : 'Refresh prices'}
+          {quotesBusy ? 'Refreshing prices…' : 'Refresh prices'}
         </button>
         {lastRefreshedAt ? (
           <span className="metrics-quotes-status metrics-quotes-status--row">
@@ -2372,10 +2374,10 @@ export default function MetricsComparePage() {
         ) : null}
         {selectedGemIds.length > 0 && rows.length > 0 ? (
           <span
-            className={`metrics-quotes-status metrics-quotes-status--row${quotesError && !quotesLoading ? ' metrics-quotes-status--error' : ''}`}
+            className={`metrics-quotes-status metrics-quotes-status--row${quotesError && !quotesBusy ? ' metrics-quotes-status--error' : ''}`}
             aria-live="polite"
           >
-            {quotesLoading ? (
+            {quotesBusy ? (
               <>
                 <span className="metrics-quotes-spinner" aria-hidden />
                 <span className="metrics-quotes-status-text">

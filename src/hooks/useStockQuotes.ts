@@ -10,6 +10,7 @@ import {
   isQuoteFresh,
   loadQuoteCache,
   loadQuoteCacheMeta,
+  QUOTE_FRESH_MS,
   shouldUseAiQuoteFallback,
   upsertQuoteCache,
 } from '../lib/quoteCache';
@@ -23,8 +24,6 @@ const AI_QUOTE_CONCURRENCY = 4;
 const AI_QUOTE_CONCURRENCY_MIN = 1;
 const AI_QUOTE_CONCURRENCY_MAX = 8;
 const QUOTE_LAST_REFRESHED_KEY = 'tjiunardi.dashboard.quoteCache.lastRefreshedAt.v1';
-/** Re-fetch quotes when cache is older than 1 day. */
-const QUOTE_FRESH_MS = 24 * 60 * 60 * 1000;
 const AUTO_REFRESH_MS = QUOTE_FRESH_MS;
 
 export type QuoteFetchPhase = 'idle' | 'web' | 'ai';
@@ -34,7 +33,7 @@ export type TickerInfo = { ticker: string; name?: string };
 
 /** In-memory session cache: survives tab switches without re-fetching. */
 const sessionQuoteCache = new Map<string, number>();
-/** Prevent duplicate in-flight fetches for the same ticker. */
+/** Prevent duplicate in-flight fetches for the same ticker (scoped per fetch generation). */
 const inFlightQuoteFetch = new Map<string, Promise<{ price: number | null; usedFinnhub: boolean }>>();
 
 function resolveWebConcurrency(): number {
@@ -61,16 +60,20 @@ function hasAiQuoteProvider(): boolean {
   return !!(openCodeKey || geminiKey);
 }
 
+function needsQuoteFetch(ticker: string, force: boolean, now: number): boolean {
+  const cached = loadQuoteCache().get(ticker);
+  if (cached == null || cached <= 0) return true;
+  if (force) return true;
+  return !isQuoteFresh(ticker, QUOTE_FRESH_MS, now);
+}
+
 /**
  * Fetches delayed last prices (deduped).
  * Pass 1: Finnhub → Yahoo (symbol) → Yahoo (name search) → Stooq.
  * Pass 2: OpenCode Go (DeepSeek V4 Flash) → Gemini for symbols still missing.
- * Persists successful prices to localStorage (survives browser restart)
- * and to session cache (survives tab switches without re-fetch).
  *
- * Only fetches missing/stale quotes (> 1d). Auto-refreshes on the same cadence.
- * Manual refresh prioritises empty cells first, then stale ones.
- * AI fallback runs for empty quotes and when the web pass misses and the cache is stale.
+ * On load, any quote older than 1 day (or with unknown age) is refreshed automatically.
+ * Manual "Refresh prices" forces a full re-fetch for all visible tickers.
  */
 export function useStockQuotes(infos: TickerInfo[]) {
   const entries = useMemo(() => {
@@ -87,6 +90,7 @@ export function useStockQuotes(infos: TickerInfo[]) {
 
   const [liveQuotes, setLiveQuotes] = useState<Map<string, number | null>>(() => new Map());
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fetchProgress, setFetchProgress] = useState<QuoteFetchProgress>({
     phase: 'idle',
@@ -105,12 +109,14 @@ export function useStockQuotes(infos: TickerInfo[]) {
   });
   const [refreshSeq, setRefreshSeq] = useState(0);
   const forceRefreshNextRef = useRef(false);
+  const fetchGenerationRef = useRef(0);
+
   const refresh = useCallback((force = false) => {
     if (force) forceRefreshNextRef.current = true;
     setRefreshSeq(v => v + 1);
   }, []);
 
-  // Auto-refresh timer
+  // Periodic re-check for quotes that have gone stale while the page stays open
   useEffect(() => {
     if (!key) return;
     const id = window.setInterval(() => {
@@ -144,20 +150,32 @@ export function useStockQuotes(infos: TickerInfo[]) {
       m.set(t, cached && cached.updatedAt > 0 ? cached.updatedAt : null);
     }
     return m;
-  }, [key, liveQuotes]);
+  }, [key, liveQuotes, refreshing]);
 
   useEffect(() => {
     if (!key) {
       setLiveQuotes(new Map());
       setLoading(false);
+      setRefreshing(false);
       setError(null);
       setFetchProgress({ phase: 'idle', current: 0, total: 0 });
       return;
     }
+
     const list = key.split('|');
     const cached = loadQuoteCache();
+    const generation = ++fetchGenerationRef.current;
+    const isForced = forceRefreshNextRef.current;
+    forceRefreshNextRef.current = false;
+    const now = Date.now();
 
-    // Immediately populate from session cache + localStorage
+    const staleOrMissing = list.filter(t => needsQuoteFetch(t, isForced, now));
+
+    const fetchQueue = isForced
+      ? [...staleOrMissing, ...list.filter(t => !staleOrMissing.includes(t))]
+      : staleOrMissing;
+
+    // Show cached values immediately while stale quotes refresh in the background
     setLiveQuotes(prev => {
       const next = new Map<string, number | null>();
       for (const t of list) {
@@ -177,44 +195,31 @@ export function useStockQuotes(infos: TickerInfo[]) {
     });
 
     let cancelled = false;
-    const isForced = forceRefreshNextRef.current;
-    forceRefreshNextRef.current = false;
-    const now = Date.now();
 
-    const staleOrMissing = list.filter(t => {
-      const p = cached.get(t);
-      if (p == null || p <= 0) return true;
-      // Session cache improves perceived speed, but freshness should still be
-      // based on persisted updatedAt so stale quotes refresh in background.
-      return isForced || !isQuoteFresh(t, QUOTE_FRESH_MS, now);
-    });
-
-    const fetchQueue = isForced
-      ? [
-          ...staleOrMissing,
-          ...list.filter(t => !staleOrMissing.includes(t)),
-        ]
-      : staleOrMissing;
-
-    // Don't show loading spinner if we already have displayed prices for all tickers
     const allHaveDisplayedPrice = list.every(t => {
-      const live = liveQuotes.get(t);
-      if (live != null && live > 0) return true;
-      const session = sessionQuoteCache.get(t);
-      if (session != null && session > 0) return true;
       const c = cached.get(t);
-      return c != null && c > 0;
+      const session = sessionQuoteCache.get(t);
+      return (c != null && c > 0) || (session != null && session > 0);
     });
     const blockUi = !allHaveDisplayedPrice && fetchQueue.length > 0;
 
     if (fetchQueue.length === 0) {
       setLoading(false);
+      setRefreshing(false);
       setError(null);
       setFetchProgress({ phase: 'idle', current: 0, total: 0 });
       return;
     }
 
+    if (isForced) {
+      for (const t of fetchQueue) {
+        inFlightQuoteFetch.delete(t);
+        sessionQuoteCache.delete(t);
+      }
+    }
+
     setLoading(blockUi);
+    setRefreshing(true);
     setError(null);
     setFetchProgress({ phase: 'web', current: 0, total: fetchQueue.length });
 
@@ -225,8 +230,12 @@ export function useStockQuotes(infos: TickerInfo[]) {
       let anyLivePrice = false;
       const webMissed: string[] = [];
       let webCompleted = 0;
+
+      const isCurrent = () => !cancelled && generation === fetchGenerationRef.current;
+
       const fetchOne = async (t: string): Promise<{ price: number | null; usedFinnhub: boolean }> => {
-        // Deduplicate in-flight requests
+        if (isForced) inFlightQuoteFetch.delete(t);
+
         let pricePromise = inFlightQuoteFetch.get(t);
         if (!pricePromise) {
           pricePromise = (async () => {
@@ -241,25 +250,38 @@ export function useStockQuotes(infos: TickerInfo[]) {
             }
           })();
           inFlightQuoteFetch.set(t, pricePromise);
-          pricePromise.finally(() => inFlightQuoteFetch.delete(t));
+          pricePromise.finally(() => {
+            if (inFlightQuoteFetch.get(t) === pricePromise) inFlightQuoteFetch.delete(t);
+          });
         }
         return pricePromise;
       };
 
       const applyOne = (t: string, price: number | null) => {
-        upsertQuoteCache(new Map([[t, price]]));
-        if (price != null && price > 0) sessionQuoteCache.set(t, price);
+        if (!isCurrent()) return;
+
+        if (price != null && price > 0) {
+          upsertQuoteCache(new Map([[t, price]]));
+          sessionQuoteCache.set(t, price);
+        }
 
         setLiveQuotes(prev => {
           const next = new Map(prev);
-          const session = sessionQuoteCache.get(t);
-          const merged = price ?? session ?? prev.get(t) ?? loadQuoteCache().get(t) ?? null;
-          next.set(t, merged);
+          if (price != null && price > 0) {
+            next.set(t, price);
+          } else if (isForced) {
+            const fallback = prev.get(t) ?? cached.get(t) ?? null;
+            next.set(t, fallback);
+          } else {
+            const session = sessionQuoteCache.get(t);
+            next.set(t, price ?? session ?? prev.get(t) ?? loadQuoteCache().get(t) ?? null);
+          }
           return next;
         });
 
-        if (price != null) anyLivePrice = true;
+        if (price != null && price > 0) anyLivePrice = true;
         else webMissed.push(t);
+
         webCompleted += 1;
         setFetchProgress({ phase: 'web', current: webCompleted, total: fetchQueue.length });
       };
@@ -267,48 +289,58 @@ export function useStockQuotes(infos: TickerInfo[]) {
       if (token) {
         for (let i = 0; i < fetchQueue.length; i++) {
           const t = fetchQueue[i];
-          if (cancelled) return;
+          if (!isCurrent()) return;
           const { price, usedFinnhub } = await fetchOne(t);
-          if (cancelled) return;
+          if (!isCurrent()) return;
           applyOne(t, price);
-          if (cancelled) return;
+          if (!isCurrent()) return;
           if (i < fetchQueue.length - 1 && usedFinnhub) await sleep(FINNHUB_GAP_MS);
         }
       } else {
         let nextIndex = 0;
         const workerCount = Math.min(resolveWebConcurrency(), fetchQueue.length);
         const worker = async () => {
-          while (!cancelled) {
+          while (isCurrent()) {
             const i = nextIndex;
             nextIndex += 1;
             if (i >= fetchQueue.length) return;
             const t = fetchQueue[i];
             const { price } = await fetchOne(t);
-            if (cancelled) return;
+            if (!isCurrent()) return;
             applyOne(t, price);
           }
         };
         await Promise.all(Array.from({ length: workerCount }, () => worker()));
       }
 
-      if (cancelled) return;
+      if (!isCurrent()) return;
 
       const aiTargets = [...new Set(webMissed)].filter(t =>
-        shouldUseAiQuoteFallback(t, QUOTE_FRESH_MS, now),
+        shouldUseAiQuoteFallback(t, QUOTE_FRESH_MS, now, { force: isForced }),
       );
+
       if (aiEnabled && aiTargets.length > 0) {
         setFetchProgress({ phase: 'ai', current: 0, total: aiTargets.length });
 
         let aiCompleted = 0;
         const applyAi = (t: string, g: number | null) => {
-          upsertQuoteCache(new Map([[t, g]]));
-          if (g != null && g > 0) sessionQuoteCache.set(t, g);
+          if (!isCurrent()) return;
+
+          if (g != null && g > 0) {
+            upsertQuoteCache(new Map([[t, g]]));
+            sessionQuoteCache.set(t, g);
+          }
 
           setLiveQuotes(prev => {
             const next = new Map(prev);
-            const session = sessionQuoteCache.get(t);
-            const merged = g != null && g > 0 ? g : session ?? prev.get(t) ?? loadQuoteCache().get(t) ?? null;
-            next.set(t, merged);
+            if (g != null && g > 0) {
+              next.set(t, g);
+            } else if (isForced) {
+              next.set(t, prev.get(t) ?? cached.get(t) ?? null);
+            } else {
+              const session = sessionQuoteCache.get(t);
+              next.set(t, g ?? session ?? prev.get(t) ?? loadQuoteCache().get(t) ?? null);
+            }
             return next;
           });
 
@@ -320,7 +352,7 @@ export function useStockQuotes(infos: TickerInfo[]) {
         let nextAiIndex = 0;
         const aiWorkerCount = Math.min(resolveAiConcurrency(), aiTargets.length);
         const aiWorker = async () => {
-          while (!cancelled) {
+          while (isCurrent()) {
             const j = nextAiIndex;
             nextAiIndex += 1;
             if (j >= aiTargets.length) return;
@@ -330,27 +362,30 @@ export function useStockQuotes(infos: TickerInfo[]) {
                 hintSymbols: listingSymbolVariants(t),
                 companyName: nameOf.get(t),
               });
-              if (cancelled) return;
+              if (!isCurrent()) return;
               applyAi(t, g);
             } catch {
-              if (cancelled) return;
+              if (!isCurrent()) return;
               applyAi(t, null);
             }
-            if (cancelled) return;
+            if (!isCurrent()) return;
             if (j < aiTargets.length - 1) await sleep(AI_QUOTE_GAP_MS);
           }
         };
         await Promise.all(Array.from({ length: aiWorkerCount }, () => aiWorker()));
       }
 
-      if (cancelled) return;
+      if (!isCurrent()) return;
+
       setLoading(false);
+      setRefreshing(false);
       setFetchProgress({ phase: 'idle', current: 0, total: 0 });
 
       const anyCached = list.some(t => {
         const p = loadQuoteCache().get(t);
         return p != null && p > 0;
       });
+
       if (!anyLivePrice && list.length > 0 && !anyCached) {
         setError(
           'No prices returned. Check API keys, rebuild after .env changes, and wait for rows to finish loading.',
@@ -370,9 +405,8 @@ export function useStockQuotes(infos: TickerInfo[]) {
     return () => {
       cancelled = true;
     };
-    // nameOf is derived from entries which is derived from infos — key already captures ticker identity
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, refreshSeq]);
 
-  return { quotes, quoteUpdatedAt, loading, error, fetchProgress, refresh, lastRefreshedAt };
+  return { quotes, quoteUpdatedAt, loading, refreshing, error, fetchProgress, refresh, lastRefreshedAt };
 }

@@ -2,7 +2,10 @@
 
 const STORAGE_KEY = 'tjiunardi.dashboard.quoteCache.v1';
 
-type QuoteCacheEntry = { price: number; updatedAt: number };
+export type QuoteCacheEntry = { price: number; updatedAt: number };
+
+/** Re-fetch when cache entry is older than this (1 day). */
+export const QUOTE_FRESH_MS = 24 * 60 * 60 * 1000;
 
 function toEntry(v: unknown): QuoteCacheEntry | null {
   if (typeof v === 'number' && v > 0) return { price: v, updatedAt: 0 };
@@ -15,6 +18,8 @@ function toEntry(v: unknown): QuoteCacheEntry | null {
 }
 
 function pickNewer(a: QuoteCacheEntry, b: QuoteCacheEntry): QuoteCacheEntry {
+  if (a.updatedAt <= 0 && b.updatedAt > 0) return b;
+  if (b.updatedAt <= 0 && a.updatedAt > 0) return a;
   if (b.updatedAt > a.updatedAt) return b;
   if (a.updatedAt > b.updatedAt) return a;
   return b.price >= a.price ? b : a;
@@ -32,10 +37,6 @@ function loadRaw(): Map<string, QuoteCacheEntry> {
       if (!e) continue;
       const uk = k.toUpperCase();
       if (k !== uk) needsPersist = true;
-      if (e.updatedAt === 0) {
-        e.updatedAt = Date.now();
-        needsPersist = true;
-      }
       const existing = m.get(uk);
       if (existing) {
         const merged = pickNewer(existing, e);
@@ -69,19 +70,27 @@ export function loadQuoteCacheMeta(): Map<string, QuoteCacheEntry> {
   return loadRaw();
 }
 
+/** Unknown timestamp (legacy entries) is always treated as stale. */
 export function isQuoteFresh(ticker: string, maxAgeMs: number, now = Date.now()): boolean {
   const raw = loadRaw();
   const e = raw.get(ticker.toUpperCase());
   if (!e) return false;
-  return e.updatedAt > 0 && now - e.updatedAt < maxAgeMs;
+  if (e.updatedAt <= 0) return false;
+  return now - e.updatedAt < maxAgeMs;
 }
 
 /**
  * After the web quote pass returns no price, try AI fallback when there is no usable cache,
- * or the cached value is older than maxAgeMs (e.g. web failed but stale numbers remain).
+ * the cached value is older than maxAgeMs, or the user forced a full refresh.
  */
-export function shouldUseAiQuoteFallback(ticker: string, maxAgeMs: number, now = Date.now()): boolean {
-  const p = loadQuoteCache().get(ticker);
+export function shouldUseAiQuoteFallback(
+  ticker: string,
+  maxAgeMs: number,
+  now = Date.now(),
+  opts?: { force?: boolean },
+): boolean {
+  if (opts?.force) return true;
+  const p = loadQuoteCache().get(ticker.toUpperCase());
   if (p == null || p <= 0) return true;
   return !isQuoteFresh(ticker, maxAgeMs, now);
 }
