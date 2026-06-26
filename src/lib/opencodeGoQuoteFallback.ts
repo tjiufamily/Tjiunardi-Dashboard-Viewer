@@ -19,25 +19,31 @@ function resolveBaseUrl(): string {
   return raw ? raw.replace(/\/$/, '') : DEFAULT_BASE_URL;
 }
 
+/** Default /api/opencode-go route — Vercel serverless injects OPENCODE_GO_API_KEY. */
+export function usesOpenCodeProxy(): boolean {
+  return resolveBaseUrl() === DEFAULT_BASE_URL;
+}
+
 export async function fetchQuoteOpenCodeGo(
   ticker: string,
   apiKey: string,
   options?: AiQuoteOptions,
 ): Promise<number | null> {
   const sym = ticker.trim();
-  if (!sym || !apiKey) return null;
+  if (!sym) return null;
+  if (!apiKey && !usesOpenCodeProxy()) return null;
 
   const model =
     (import.meta.env.VITE_OPENCODE_GO_MODEL as string | undefined)?.trim() || DEFAULT_MODEL;
   const url = `${resolveBaseUrl()}/v1/chat/completions`;
 
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+
   try {
     const res = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
+      headers,
       body: JSON.stringify({
         model,
         messages: [{ role: 'user', content: buildQuotePrompt(sym, options) }],

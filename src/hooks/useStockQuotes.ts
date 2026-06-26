@@ -6,6 +6,7 @@ import {
   sleep,
 } from '../lib/stockQuotes';
 import { fetchQuoteAi } from '../lib/aiQuoteFallback';
+import { usesOpenCodeProxy } from '../lib/opencodeGoQuoteFallback';
 import {
   isQuoteFresh,
   loadQuoteCache,
@@ -57,7 +58,7 @@ function resolveAiConcurrency(): number {
 function hasAiQuoteProvider(): boolean {
   const openCodeKey = (import.meta.env.VITE_OPENCODE_GO_API_KEY as string | undefined)?.trim();
   const geminiKey = (import.meta.env.VITE_GEMINI_API_KEY as string | undefined)?.trim();
-  return !!(openCodeKey || geminiKey);
+  return !!(openCodeKey || geminiKey || (import.meta.env.PROD && usesOpenCodeProxy()));
 }
 
 function needsQuoteFetch(ticker: string, force: boolean, now: number): boolean {

@@ -4,14 +4,15 @@
  */
 
 import { fetchQuoteGemini } from './geminiQuoteFallback';
-import { fetchQuoteOpenCodeGo } from './opencodeGoQuoteFallback';
+import { fetchQuoteOpenCodeGo, usesOpenCodeProxy } from './opencodeGoQuoteFallback';
 import type { AiQuoteOptions } from './aiQuoteCommon';
 
 export type { AiQuoteOptions };
 
 export async function fetchQuoteAi(ticker: string, options?: AiQuoteOptions): Promise<number | null> {
-  const openCodeKey = (import.meta.env.VITE_OPENCODE_GO_API_KEY as string | undefined)?.trim();
-  if (openCodeKey) {
+  const openCodeKey = (import.meta.env.VITE_OPENCODE_GO_API_KEY as string | undefined)?.trim() ?? '';
+  const canUseOpenCode = openCodeKey || (import.meta.env.PROD && usesOpenCodeProxy());
+  if (canUseOpenCode) {
     const p = await fetchQuoteOpenCodeGo(ticker, openCodeKey, options);
     if (p != null) return p;
   }
