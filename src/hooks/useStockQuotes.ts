@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  fetchDelayedQuoteWithoutGemini,
+  fetchYahooQuotesForTickers,
   listingSymbolVariants,
   normalizeTickerSymbol,
   sleep,
@@ -15,12 +15,9 @@ import {
   shouldUseAiQuoteFallback,
   upsertQuoteCache,
 } from '../lib/quoteCache';
+import { fetchSupabaseQuotes, isSupabaseQuoteFresh } from '../lib/supabaseQuotes';
 
-const FINNHUB_GAP_MS = 1100;
 const AI_QUOTE_GAP_MS = 150;
-const WEB_NO_FINNHUB_CONCURRENCY = 4;
-const WEB_NO_FINNHUB_CONCURRENCY_MIN = 1;
-const WEB_NO_FINNHUB_CONCURRENCY_MAX = 8;
 const AI_QUOTE_CONCURRENCY = 4;
 const AI_QUOTE_CONCURRENCY_MIN = 1;
 const AI_QUOTE_CONCURRENCY_MAX = 8;
@@ -32,19 +29,7 @@ export type QuoteFetchProgress = { phase: QuoteFetchPhase; current: number; tota
 
 export type TickerInfo = { ticker: string; name?: string };
 
-/** In-memory session cache: survives tab switches without re-fetching. */
 const sessionQuoteCache = new Map<string, number>();
-/** Prevent duplicate in-flight fetches for the same ticker (scoped per fetch generation). */
-const inFlightQuoteFetch = new Map<string, Promise<{ price: number | null; usedFinnhub: boolean }>>();
-
-function resolveWebConcurrency(): number {
-  const raw = Number(import.meta.env.VITE_QUOTE_CONCURRENCY);
-  if (!Number.isFinite(raw)) return WEB_NO_FINNHUB_CONCURRENCY;
-  const n = Math.trunc(raw);
-  if (n < WEB_NO_FINNHUB_CONCURRENCY_MIN) return WEB_NO_FINNHUB_CONCURRENCY_MIN;
-  if (n > WEB_NO_FINNHUB_CONCURRENCY_MAX) return WEB_NO_FINNHUB_CONCURRENCY_MAX;
-  return n;
-}
 
 function resolveAiConcurrency(): number {
   const raw = Number(import.meta.env.VITE_AI_QUOTE_CONCURRENCY);
@@ -69,12 +54,8 @@ function needsQuoteFetch(ticker: string, force: boolean, now: number): boolean {
 }
 
 /**
- * Fetches delayed last prices (deduped).
- * Pass 1: Finnhub → Yahoo (symbol) → Yahoo (name search) → Stooq.
- * Pass 2: OpenCode Go (DeepSeek V4 Flash) → Gemini for symbols still missing.
- *
- * On load, any quote older than 1 day (or with unknown age) is refreshed automatically.
- * Manual "Refresh prices" forces a full re-fetch for all visible tickers.
+ * Delayed last prices: Supabase quote_cache (Hermes cron) → Yahoo batch → AI fallback.
+ * Manual "Refresh prices" forces a full Yahoo re-fetch for all visible tickers.
  */
 export function useStockQuotes(infos: TickerInfo[]) {
   const entries = useMemo(() => {
@@ -117,7 +98,6 @@ export function useStockQuotes(infos: TickerInfo[]) {
     setRefreshSeq(v => v + 1);
   }, []);
 
-  // Periodic re-check for quotes that have gone stale while the page stays open
   useEffect(() => {
     if (!key) return;
     const id = window.setInterval(() => {
@@ -168,15 +148,7 @@ export function useStockQuotes(infos: TickerInfo[]) {
     const generation = ++fetchGenerationRef.current;
     const isForced = forceRefreshNextRef.current;
     forceRefreshNextRef.current = false;
-    const now = Date.now();
 
-    const staleOrMissing = list.filter(t => needsQuoteFetch(t, isForced, now));
-
-    const fetchQueue = isForced
-      ? [...staleOrMissing, ...list.filter(t => !staleOrMissing.includes(t))]
-      : staleOrMissing;
-
-    // Show cached values immediately while stale quotes refresh in the background
     setLiveQuotes(prev => {
       const next = new Map<string, number | null>();
       for (const t of list) {
@@ -196,67 +168,73 @@ export function useStockQuotes(infos: TickerInfo[]) {
     });
 
     let cancelled = false;
-
-    const allHaveDisplayedPrice = list.every(t => {
-      const c = cached.get(t);
-      const session = sessionQuoteCache.get(t);
-      return (c != null && c > 0) || (session != null && session > 0);
-    });
-    const blockUi = !allHaveDisplayedPrice && fetchQueue.length > 0;
-
-    if (fetchQueue.length === 0) {
-      setLoading(false);
-      setRefreshing(false);
-      setError(null);
-      setFetchProgress({ phase: 'idle', current: 0, total: 0 });
-      return;
-    }
-
-    if (isForced) {
-      for (const t of fetchQueue) {
-        inFlightQuoteFetch.delete(t);
-        sessionQuoteCache.delete(t);
-      }
-    }
-
-    setLoading(blockUi);
-    setRefreshing(true);
-    setError(null);
-    setFetchProgress({ phase: 'web', current: 0, total: fetchQueue.length });
-
-    const token = import.meta.env.VITE_FINNHUB_API_KEY as string | undefined;
-    const aiEnabled = hasAiQuoteProvider();
+    const isCurrent = () => !cancelled && generation === fetchGenerationRef.current;
 
     (async () => {
+      const now = Date.now();
+      const supabaseQuotes = await fetchSupabaseQuotes(list);
+      if (!isCurrent()) return;
+
+      if (supabaseQuotes.size > 0) {
+        const priceUpdates = new Map<string, number | null>();
+        const tsUpdates = new Map<string, number>();
+        for (const [t, q] of supabaseQuotes) {
+          priceUpdates.set(t, q.price);
+          tsUpdates.set(t, q.updatedAt);
+          sessionQuoteCache.set(t, q.price);
+        }
+        upsertQuoteCache(priceUpdates, tsUpdates);
+        setLiveQuotes(prev => {
+          const next = new Map(prev);
+          for (const t of list) {
+            const sq = supabaseQuotes.get(t);
+            if (sq && sq.price > 0) next.set(t, sq.price);
+          }
+          return next;
+        });
+      }
+
+      const needsFetch = (t: string) => {
+        if (isForced) return true;
+        const sq = supabaseQuotes.get(t);
+        if (sq && isSupabaseQuoteFresh(sq, QUOTE_FRESH_MS, now)) return false;
+        return needsQuoteFetch(t, false, now);
+      };
+
+      const staleOrMissing = list.filter(t => needsFetch(t));
+      const fetchQueue = isForced
+        ? [...staleOrMissing, ...list.filter(t => !staleOrMissing.includes(t))]
+        : staleOrMissing;
+
+      const allHaveDisplayedPrice = list.every(t => {
+        const sq = supabaseQuotes.get(t);
+        if (sq && sq.price > 0) return true;
+        const c = cached.get(t);
+        const session = sessionQuoteCache.get(t);
+        return (c != null && c > 0) || (session != null && session > 0);
+      });
+      const blockUi = !allHaveDisplayedPrice && fetchQueue.length > 0;
+
+      if (fetchQueue.length === 0) {
+        setLoading(false);
+        setRefreshing(false);
+        setError(null);
+        setFetchProgress({ phase: 'idle', current: 0, total: 0 });
+        return;
+      }
+
+      if (isForced) {
+        for (const t of fetchQueue) sessionQuoteCache.delete(t);
+      }
+
+      setLoading(blockUi);
+      setRefreshing(true);
+      setError(null);
+      setFetchProgress({ phase: 'web', current: 0, total: fetchQueue.length });
+
+      const aiEnabled = hasAiQuoteProvider();
       let anyLivePrice = false;
       const webMissed: string[] = [];
-      let webCompleted = 0;
-
-      const isCurrent = () => !cancelled && generation === fetchGenerationRef.current;
-
-      const fetchOne = async (t: string): Promise<{ price: number | null; usedFinnhub: boolean }> => {
-        if (isForced) inFlightQuoteFetch.delete(t);
-
-        let pricePromise = inFlightQuoteFetch.get(t);
-        if (!pricePromise) {
-          pricePromise = (async () => {
-            try {
-              const r = await fetchDelayedQuoteWithoutGemini(t, nameOf.get(t));
-              return {
-                price: r.price != null && r.price > 0 ? r.price : null,
-                usedFinnhub: !!r.usedFinnhub,
-              };
-            } catch {
-              return { price: null, usedFinnhub: !!token };
-            }
-          })();
-          inFlightQuoteFetch.set(t, pricePromise);
-          pricePromise.finally(() => {
-            if (inFlightQuoteFetch.get(t) === pricePromise) inFlightQuoteFetch.delete(t);
-          });
-        }
-        return pricePromise;
-      };
 
       const applyOne = (t: string, price: number | null) => {
         if (!isCurrent()) return;
@@ -271,8 +249,7 @@ export function useStockQuotes(infos: TickerInfo[]) {
           if (price != null && price > 0) {
             next.set(t, price);
           } else if (isForced) {
-            const fallback = prev.get(t) ?? cached.get(t) ?? null;
-            next.set(t, fallback);
+            next.set(t, prev.get(t) ?? cached.get(t) ?? null);
           } else {
             const session = sessionQuoteCache.get(t);
             next.set(t, price ?? session ?? prev.get(t) ?? loadQuoteCache().get(t) ?? null);
@@ -282,36 +259,16 @@ export function useStockQuotes(infos: TickerInfo[]) {
 
         if (price != null && price > 0) anyLivePrice = true;
         else webMissed.push(t);
-
-        webCompleted += 1;
-        setFetchProgress({ phase: 'web', current: webCompleted, total: fetchQueue.length });
       };
 
-      if (token) {
-        for (let i = 0; i < fetchQueue.length; i++) {
-          const t = fetchQueue[i];
-          if (!isCurrent()) return;
-          const { price, usedFinnhub } = await fetchOne(t);
-          if (!isCurrent()) return;
-          applyOne(t, price);
-          if (!isCurrent()) return;
-          if (i < fetchQueue.length - 1 && usedFinnhub) await sleep(FINNHUB_GAP_MS);
-        }
-      } else {
-        let nextIndex = 0;
-        const workerCount = Math.min(resolveWebConcurrency(), fetchQueue.length);
-        const worker = async () => {
-          while (isCurrent()) {
-            const i = nextIndex;
-            nextIndex += 1;
-            if (i >= fetchQueue.length) return;
-            const t = fetchQueue[i];
-            const { price } = await fetchOne(t);
-            if (!isCurrent()) return;
-            applyOne(t, price);
-          }
-        };
-        await Promise.all(Array.from({ length: workerCount }, () => worker()));
+      const yahooResults = await fetchYahooQuotesForTickers(fetchQueue, nameOf);
+      if (!isCurrent()) return;
+
+      let webCompleted = 0;
+      for (const t of fetchQueue) {
+        applyOne(t, yahooResults.get(t) ?? null);
+        webCompleted += 1;
+        setFetchProgress({ phase: 'web', current: webCompleted, total: fetchQueue.length });
       }
 
       if (!isCurrent()) return;
@@ -388,9 +345,7 @@ export function useStockQuotes(infos: TickerInfo[]) {
       });
 
       if (!anyLivePrice && list.length > 0 && !anyCached) {
-        setError(
-          'No prices returned. Check API keys, rebuild after .env changes, and wait for rows to finish loading.',
-        );
+        setError('No prices returned. Wait for Hermes quote refresh or click Refresh prices.');
       } else {
         setError(null);
         const ts = Date.now();

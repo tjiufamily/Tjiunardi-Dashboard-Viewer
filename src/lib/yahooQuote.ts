@@ -2,15 +2,15 @@
  * Yahoo Finance quote fetcher.
  * - Symbol lookup: v8 chart API
  * - Name-based search: v1 search API → best match → chart
- * Tries direct fetch; if CORS-blocked, falls back to public CORS proxies.
- * Working strategy is cached for the session.
+ * Prefers same-origin /api/yahoo proxy (Vercel + Vite dev) to avoid browser CORS.
+ * Falls back to direct fetch and public CORS proxies when the proxy is unavailable.
  */
 
 const YAHOO_CHART = 'https://query1.finance.yahoo.com/v8/finance/chart';
 const YAHOO_SEARCH = 'https://query1.finance.yahoo.com/v1/finance/search';
+const YAHOO_SERVER = '/api/yahoo';
 
 const CORS_PROXIES: Array<(url: string) => string> = [
-  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
   url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
 ];
 
@@ -46,7 +46,7 @@ function extractPrice(data: YahooChartResponse): number | null {
 type Strategy = 'untested' | 'direct' | number | 'unavailable';
 let strategy: Strategy = 'untested';
 
-async function tryFetchJson<T>(url: string, timeoutMs = 6000): Promise<T | null> {
+async function tryFetchJson<T>(url: string, timeoutMs = 8000): Promise<T | null> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -58,6 +58,11 @@ async function tryFetchJson<T>(url: string, timeoutMs = 6000): Promise<T | null>
     clearTimeout(timer);
     return null;
   }
+}
+
+async function fetchViaServerProxy<T>(params: Record<string, string>): Promise<T | null> {
+  const qs = new URLSearchParams(params);
+  return tryFetchJson<T>(`${YAHOO_SERVER}?${qs.toString()}`);
 }
 
 async function fetchWithStrategy<T>(rawUrl: string): Promise<T | null> {
@@ -84,13 +89,28 @@ async function fetchWithStrategy<T>(rawUrl: string): Promise<T | null> {
   return null;
 }
 
+async function fetchYahooChart(symbol: string): Promise<YahooChartResponse | null> {
+  const viaServer = await fetchViaServerProxy<YahooChartResponse>({ kind: 'chart', symbol });
+  if (viaServer != null) return viaServer;
+
+  const url = `${YAHOO_CHART}/${encodeURIComponent(symbol)}?range=1d&interval=1d`;
+  return fetchWithStrategy<YahooChartResponse>(url);
+}
+
+async function fetchYahooSearch(q: string): Promise<YahooSearchResponse | null> {
+  const viaServer = await fetchViaServerProxy<YahooSearchResponse>({ kind: 'search', q });
+  if (viaServer != null) return viaServer;
+
+  const url = `${YAHOO_SEARCH}?q=${encodeURIComponent(q)}&quotesCount=6&newsCount=0`;
+  return fetchWithStrategy<YahooSearchResponse>(url);
+}
+
 /**
  * Fetch a quote from Yahoo Finance by exact symbol (e.g. `0700.HK`, `CSU.TO`).
  */
 export async function fetchQuoteYahoo(yahooSymbol: string): Promise<number | null> {
   if (!yahooSymbol) return null;
-  const url = `${YAHOO_CHART}/${encodeURIComponent(yahooSymbol)}?range=1d&interval=1d`;
-  const data = await fetchWithStrategy<YahooChartResponse>(url);
+  const data = await fetchYahooChart(yahooSymbol);
   return data ? extractPrice(data) : null;
 }
 
@@ -103,7 +123,7 @@ function exchangeHintFromTicker(ticker: string): string {
   if (/\.V$|\.CVE$/i.test(t)) return 'TSX Venture';
   if (/\.ST$|\.STO$/i.test(t)) return 'Stockholm';
   if (/\.AS$|\.AMS$/i.test(t)) return 'Amsterdam';
-  if (/\.DE$/i.test(t)) return 'XETRA';
+  if (/\.DE$|\.FRA$/i.test(t)) return 'XETRA';
   if (/\.L$/i.test(t)) return 'London';
   if (/\.PA$|\.EPA$/i.test(t)) return 'Paris';
   if (/\.OL$/i.test(t)) return 'Oslo';
@@ -124,9 +144,8 @@ export async function fetchQuoteYahooByName(
 
   const exHint = exchangeHintFromTicker(ticker);
   const q = exHint ? `${companyName} ${exHint}` : companyName;
-  const searchUrl = `${YAHOO_SEARCH}?q=${encodeURIComponent(q)}&quotesCount=6&newsCount=0`;
 
-  const data = await fetchWithStrategy<YahooSearchResponse>(searchUrl);
+  const data = await fetchYahooSearch(q);
   if (!data?.quotes?.length) return null;
 
   const equities = data.quotes.filter(
@@ -136,8 +155,7 @@ export async function fetchQuoteYahooByName(
 
   for (const eq of equities.slice(0, 3)) {
     const sym = eq.symbol!;
-    const chartUrl = `${YAHOO_CHART}/${encodeURIComponent(sym)}?range=1d&interval=1d`;
-    const chart = await fetchWithStrategy<YahooChartResponse>(chartUrl);
+    const chart = await fetchYahooChart(sym);
     const p = chart ? extractPrice(chart) : null;
     if (p != null) return { price: p, resolvedSymbol: sym };
   }

@@ -96,13 +96,19 @@ export function shouldUseAiQuoteFallback(
 }
 
 /** Merge new prices into storage (only positive numbers). */
-export function upsertQuoteCache(updates: Map<string, number | null>): void {
+export function upsertQuoteCache(
+  updates: Map<string, number | null>,
+  updatedAtByTicker?: Map<string, number>,
+): void {
   try {
     const full = loadRaw();
     const now = Date.now();
     for (const [t, p] of updates) {
-      if (p != null && p > 0 && !Number.isNaN(p))
-        full.set(t.toUpperCase(), { price: p, updatedAt: now });
+      if (p != null && p > 0 && !Number.isNaN(p)) {
+        const uk = t.toUpperCase();
+        const ts = updatedAtByTicker?.get(uk) ?? updatedAtByTicker?.get(t) ?? now;
+        full.set(uk, { price: p, updatedAt: ts > 0 ? ts : now });
+      }
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(Object.fromEntries(full)));
   } catch {

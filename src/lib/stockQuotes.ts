@@ -36,6 +36,8 @@ export function listingSymbolVariants(ticker: string): string[] {
     if (sg) add(`${sg[1]}.SI`);
     const hk = raw.match(/^([A-Z0-9.]+):HK$/i);
     if (hk) add(`${hk[1]}.HK`);
+    const nl = raw.match(/^([A-Z0-9.]+):NL$/i);
+    if (nl) add(`${nl[1]}.AS`);
   }
   if (/\.TSE$/i.test(raw)) add(raw.replace(/\.TSE$/i, '.TO'));
   if (/\.CVE$/i.test(raw)) add(raw.replace(/\.CVE$/i, '.V'));
@@ -53,6 +55,11 @@ export function listingSymbolVariants(ticker: string): string[] {
     add(`${n.padStart(4, '0')}.HK`);
     add(`${n.padStart(5, '0')}.HK`);
     if (n.length > 4) add(`${n.replace(/^0+/, '') || '0'}.HK`);
+  }
+
+  // US share classes (BRK.B → BRK-B on Yahoo)
+  if (/^[A-Z0-9-]+\.[A-Z]$/i.test(raw) && !INTL_LISTING_SUFFIX.test(raw)) {
+    add(raw.replace(/\./g, '-'));
   }
 
   return [...seen];
@@ -117,6 +124,10 @@ export function stooqSymbolsForTicker(ticker: string): string[] {
   if (/\.CVE$/i.test(t)) add(`${t.replace(/\.CVE$/i, '').toLowerCase()}.v`);
   if (/\.STO$/i.test(t)) add(`${t.replace(/\.STO$/i, '').toLowerCase()}.st`);
   if (/\.AMS$/i.test(t)) add(`${t.replace(/\.AMS$/i, '').toLowerCase()}.as`);
+  if (/\.EPA$/i.test(t)) add(`${t.replace(/\.EPA$/i, '').toLowerCase()}.pa`);
+  if (/\.FRA$/i.test(t)) add(`${t.replace(/\.FRA$/i, '').toLowerCase()}.de`);
+  if (/\.NSE$/i.test(t)) add(`${t.replace(/\.NSE$/i, '').toLowerCase()}.ns`);
+  if (/\.BOM$/i.test(t)) add(`${t.replace(/\.BOM$/i, '').toLowerCase()}.bo`);
 
   const sg = t.match(/^([A-Z0-9.]+):SG$/i);
   if (sg) add(`${sg[1].replace(/\./g, '').toLowerCase()}.si`);
@@ -299,8 +310,7 @@ function isInternationalTicker(ticker: string): boolean {
 }
 
 /**
- * For non-US tickers with a company name: Yahoo name-search → Yahoo symbol → Finnhub → Stooq.
- * For US/unknown tickers: Finnhub → Yahoo symbol → Yahoo name-search → Stooq.
+ * Yahoo-only delayed quote fetch (all listings). Batch path preferred in useStockQuotes.
  * Gemini runs as a separate pass in the hook.
  */
 export async function fetchDelayedQuoteWithoutGemini(
@@ -312,48 +322,71 @@ export async function fetchDelayedQuoteWithoutGemini(
   usedFinnhub: boolean;
 }> {
   const intl = isInternationalTicker(ticker);
-  const token = import.meta.env.VITE_FINNHUB_API_KEY as string | undefined;
-  let usedFinnhub = false;
 
   if (intl && companyName) {
     const r = await fetchQuoteYahooByName(companyName, ticker);
-    if (r != null) return { price: r.price, source: 'yahoo', usedFinnhub };
+    if (r != null) return { price: r.price, source: 'yahoo', usedFinnhub: false };
   }
 
-  if (intl) {
-    for (const sym of listingSymbolVariants(ticker)) {
-      const p = await fetchQuoteYahoo(sym);
-      if (p != null) return { price: p, source: 'yahoo', usedFinnhub };
-    }
+  for (const sym of listingSymbolVariants(ticker)) {
+    const p = await fetchQuoteYahoo(sym);
+    if (p != null) return { price: p, source: 'yahoo', usedFinnhub: false };
   }
 
-  if (token) {
-    usedFinnhub = true;
-    const p = await fetchQuoteFinnhubResolved(ticker, token);
-    if (p != null) return { price: p, source: 'finnhub', usedFinnhub };
-  }
-
-  if (!intl) {
-    for (const sym of listingSymbolVariants(ticker)) {
-      const p = await fetchQuoteYahoo(sym);
-      if (p != null) return { price: p, source: 'yahoo', usedFinnhub };
-    }
-    if (companyName) {
-      const r = await fetchQuoteYahooByName(companyName, ticker);
-      if (r != null) return { price: r.price, source: 'yahoo', usedFinnhub };
-    }
+  if (!intl && companyName) {
+    const r = await fetchQuoteYahooByName(companyName, ticker);
+    if (r != null) return { price: r.price, source: 'yahoo', usedFinnhub: false };
   }
 
   try {
     let p = await fetchQuoteStooq(ticker);
-    if (p != null) return { price: p, source: 'stooq', usedFinnhub };
+    if (p != null) return { price: p, source: 'stooq', usedFinnhub: false };
     p = await fetchQuoteStooqForeignFallback(ticker);
-    if (p != null) return { price: p, source: 'stooq', usedFinnhub };
+    if (p != null) return { price: p, source: 'stooq', usedFinnhub: false };
   } catch {
     // CORS or network
   }
 
-  return { price: null, source: 'none', usedFinnhub };
+  return { price: null, source: 'none', usedFinnhub: false };
+}
+
+/** Resolve Yahoo prices for many portfolio tickers in one batch (server proxy when available). */
+export async function fetchYahooQuotesForTickers(
+  tickers: string[],
+  nameOf?: Map<string, string>,
+): Promise<Map<string, number | null>> {
+  const unique = [...new Set(tickers.map(normalizeTickerSymbol).filter(Boolean))];
+  const out = new Map<string, number | null>();
+  if (unique.length === 0) return out;
+
+  const symbolToTicker = new Map<string, string>();
+  const symbols: string[] = [];
+  for (const t of unique) {
+    out.set(t, null);
+    for (const sym of listingSymbolVariants(t)) {
+      if (!symbolToTicker.has(sym)) {
+        symbolToTicker.set(sym, t);
+        symbols.push(sym);
+      }
+    }
+  }
+
+  const { fetchYahooBatchQuotes } = await import('./yahooBatch');
+  const yahooPrices = await fetchYahooBatchQuotes(symbols);
+  for (const [sym, p] of yahooPrices) {
+    const t = symbolToTicker.get(sym);
+    if (t && out.get(t) == null) out.set(t, p);
+  }
+
+  for (const t of unique) {
+    if (out.get(t) != null) continue;
+    const name = nameOf?.get(t);
+    if (!name) continue;
+    const r = await fetchQuoteYahooByName(name, t);
+    if (r != null) out.set(t, r.price);
+  }
+
+  return out;
 }
 
 export async function fetchDelayedQuote(
